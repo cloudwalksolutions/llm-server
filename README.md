@@ -113,3 +113,5 @@ sudo systemctl enable --now cloudflared
   ```
 
 Your Ollama server is now installed, bound to all interfaces, firewall-open, and optionally exposed globally via Cloudflare Tunnel. Enjoy serving LLMs!
+
+
