@@ -134,14 +134,17 @@ phase4_model_download() {
     
     get_actual_user
     
-    # Install huggingface-cli in a venv (avoids Fedora PEP 668 restrictions)
-    HF_CLI="/opt/llm/venv/bin/huggingface-cli"
-    if [[ ! -x "$HF_CLI" ]]; then
-        log_info "Creating Python venv and installing huggingface-cli..."
-        python3 -m venv --clear /opt/llm/venv
-        /opt/llm/venv/bin/pip install --upgrade pip --quiet
-        /opt/llm/venv/bin/pip install "huggingface_hub[hf_transfer]" --quiet
-        log_info "huggingface-cli installed at $HF_CLI"
+    # Install huggingface-cli
+    if ! command -v huggingface-cli &> /dev/null; then
+        log_info "Installing huggingface-cli..."
+        pip3 install --break-system-packages "huggingface_hub[hf_transfer]"
+        # Ensure the binary is on PATH for all users
+        if [[ -f /usr/local/bin/huggingface-cli ]]; then
+            log_info "huggingface-cli installed to /usr/local/bin"
+        elif [[ -f /root/.local/bin/huggingface-cli ]]; then
+            ln -sf /root/.local/bin/huggingface-cli /usr/local/bin/huggingface-cli
+            log_info "Linked huggingface-cli to /usr/local/bin"
+        fi
     else
         log_info "huggingface-cli already installed"
     fi
@@ -152,7 +155,7 @@ phase4_model_download() {
         log_info "Small model already exists: $SMALL_MODEL_FILE"
     else
         log_info "Downloading small model: $SMALL_MODEL_FILE (~5GB)..."
-        HF_HUB_ENABLE_HF_TRANSFER=1 "$HF_CLI" download \
+        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
             "$SMALL_MODEL_REPO" "$SMALL_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Small model downloaded ✓"
     fi
@@ -164,7 +167,7 @@ phase4_model_download() {
     else
         log_info "Downloading best 32B model: $BEST_MODEL_FILE (~20GB)..."
         log_info "This will take a while, please be patient..."
-        HF_HUB_ENABLE_HF_TRANSFER=1 "$HF_CLI" download \
+        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
             "$BEST_MODEL_REPO" "$BEST_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Best model downloaded ✓"
     fi
