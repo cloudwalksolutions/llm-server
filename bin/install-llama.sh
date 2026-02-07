@@ -15,7 +15,7 @@ CONTAINER_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
 
 # Models to download
 SMALL_MODEL_REPO="Qwen/Qwen3-8B-GGUF"
-SMALL_MODEL_FILE="qwen3-8b-q4_k_m.gguf"
+SMALL_MODEL_FILE="Qwen3-8B-Q4_K_M.gguf"
 
 BEST_MODEL_REPO="unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF"
 BEST_MODEL_FILE="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
