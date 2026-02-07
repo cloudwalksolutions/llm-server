@@ -63,7 +63,7 @@ phase1_system_setup() {
     dnf upgrade -y
     
     log_info "Installing required packages..."
-    dnf install -y podman python3 git curl wget jq
+    dnf install -y podman python3 git curl wget jq byobu
     
     log_info "Configuring kernel parameters for 128GB unified GPU memory..."
     
@@ -506,6 +506,28 @@ main() {
     # Optional: Cloudflare Tunnel setup
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     "$SCRIPT_DIR/setup-cloudflare.sh" "$LLAMA_PORT"
+
+    # Print sample curl command
+    echo ""
+    echo "Try it out:"
+    echo ""
+    echo "  curl http://$IP_ADDR:$LLAMA_PORT/v1/chat/completions \\"
+    echo "    -H 'Content-Type: application/json' \\"
+    echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+    echo ""
+
+    # If Cloudflare was configured, show that too
+    if [[ -f /etc/cloudflared/config.yml ]]; then
+        CF_HOST=$(grep 'hostname:' /etc/cloudflared/config.yml | head -1 | awk '{print $3}')
+        if [[ -n "$CF_HOST" ]]; then
+            echo "Via Cloudflare Tunnel:"
+            echo ""
+            echo "  curl https://$CF_HOST/v1/chat/completions \\"
+            echo "    -H 'Content-Type: application/json' \\"
+            echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+            echo ""
+        fi
+    fi
 }
 
 main "$@"

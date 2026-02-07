@@ -6,6 +6,12 @@ set -euo pipefail
 
 echo "[*] Starting Ollama server setup..."
 
+# 0. Ensure jq is available (needed by setup-cloudflare.sh)
+if ! command -v jq &> /dev/null; then
+  echo "[*] Installing jq..."
+  sudo apt-get update && sudo apt-get install -y jq byobu
+fi
+
 # 1. Install Ollama
 if ! command -v ollama &> /dev/null; then
   echo "[*] Installing Ollama..."
@@ -50,4 +56,26 @@ echo "[*] Power button disabled"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$SCRIPT_DIR/setup-cloudflare.sh" 11434
 
+IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
+
 echo "[*] Setup complete. Ollama is running on port 11434."
+echo ""
+echo "Try it out:"
+echo ""
+echo "  curl http://$IP_ADDR:11434/v1/chat/completions \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"model\":\"llama3\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+echo ""
+
+# If Cloudflare was configured, show that too
+if [[ -f /etc/cloudflared/config.yml ]]; then
+  CF_HOST=$(grep 'hostname:' /etc/cloudflared/config.yml | head -1 | awk '{print $3}')
+  if [[ -n "$CF_HOST" ]]; then
+    echo "Via Cloudflare Tunnel:"
+    echo ""
+    echo "  curl https://$CF_HOST/v1/chat/completions \\"
+    echo "    -H 'Content-Type: application/json' \\"
+    echo "    -d '{\"model\":\"llama3\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+    echo ""
+  fi
+fi
