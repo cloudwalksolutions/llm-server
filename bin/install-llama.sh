@@ -63,7 +63,7 @@ phase1_system_setup() {
     dnf upgrade -y
     
     log_info "Installing required packages..."
-    dnf install -y podman python3-pip git curl wget jq
+    dnf install -y podman python3 git curl wget jq
     
     log_info "Configuring kernel parameters for 128GB unified GPU memory..."
     
@@ -134,9 +134,16 @@ phase4_model_download() {
     
     get_actual_user
     
-    # Install huggingface-cli system-wide
-    log_info "Installing huggingface-cli..."
-    pip3 install "huggingface_hub[hf_transfer]" --quiet
+    # Install huggingface-cli in a venv (avoids Fedora PEP 668 restrictions)
+    HF_CLI="/opt/llm/venv/bin/huggingface-cli"
+    if [[ ! -x "$HF_CLI" ]]; then
+        log_info "Creating Python venv and installing huggingface-cli..."
+        python3 -m venv /opt/llm/venv
+        /opt/llm/venv/bin/pip install --upgrade pip --quiet
+        /opt/llm/venv/bin/pip install "huggingface_hub[hf_transfer]" --quiet
+    else
+        log_info "huggingface-cli already installed"
+    fi
 
     # Small model
     SMALL_MODEL_PATH="$MODELS_DIR/$SMALL_MODEL_FILE"
@@ -144,7 +151,7 @@ phase4_model_download() {
         log_info "Small model already exists: $SMALL_MODEL_FILE"
     else
         log_info "Downloading small model: $SMALL_MODEL_FILE (~5GB)..."
-        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
+        HF_HUB_ENABLE_HF_TRANSFER=1 "$HF_CLI" download \
             "$SMALL_MODEL_REPO" "$SMALL_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Small model downloaded ✓"
     fi
@@ -156,7 +163,7 @@ phase4_model_download() {
     else
         log_info "Downloading best 32B model: $BEST_MODEL_FILE (~20GB)..."
         log_info "This will take a while, please be patient..."
-        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
+        HF_HUB_ENABLE_HF_TRANSFER=1 "$HF_CLI" download \
             "$BEST_MODEL_REPO" "$BEST_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Best model downloaded ✓"
     fi
