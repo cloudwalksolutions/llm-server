@@ -237,6 +237,7 @@ EOF
 
     # Create config file (only if missing — preserve user changes from llm-switch)
     if [[ ! -f /etc/llama-server.conf ]]; then
+        GENERATED_API_KEY=$(openssl rand -hex 32)
         cat > /etc/llama-server.conf << EOF
 # LLaMA Server Configuration
 # Edit and restart: sudo systemctl restart llama-server
@@ -247,6 +248,9 @@ LLAMA_HOST=$LLAMA_HOST
 CONTEXT_SIZE=$CONTEXT_SIZE
 MODEL_FILE=$DEFAULT_MODEL
 CONTAINER_IMAGE=$CONTAINER_IMAGE
+
+# API key for bearer-token auth (remove or leave empty to disable)
+LLAMA_API_KEY=$GENERATED_API_KEY
 EOF
         log_info "Created /etc/llama-server.conf"
     else
@@ -274,6 +278,7 @@ ExecStart=/usr/bin/podman run \
     --security-opt seccomp=unconfined \
     -v /opt/llm/models:/models:ro \
     -p ${LLAMA_PORT}:${LLAMA_PORT} \
+    -e LLAMA_API_KEY=${LLAMA_API_KEY} \
     ${CONTAINER_IMAGE} \
     llama-server \
         --no-mmap \
@@ -383,32 +388,6 @@ echo "════════════════════════�
 EOF
     chmod +x /opt/llm/bin/llm-status
     
-    # Test API
-    cat > /opt/llm/bin/llm-test << 'EOF'
-#!/bin/bash
-source /etc/llama-server.conf 2>/dev/null || LLAMA_PORT=8080
-
-echo "Testing LLaMA server API..."
-echo ""
-
-result=$(curl -s "http://localhost:$LLAMA_PORT/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "messages": [{"role": "user", "content": "Say hello in exactly 5 words."}],
-        "max_tokens": 50,
-        "temperature": 0.7
-    }' 2>/dev/null)
-
-if command -v jq &>/dev/null; then
-    echo "$result" | jq -r '.choices[0].message.content // .'
-else
-    echo "$result"
-fi
-
-echo ""
-EOF
-    chmod +x /opt/llm/bin/llm-test
-    
     # Logs
     cat > /opt/llm/bin/llm-logs << 'EOF'
 #!/bin/bash
@@ -467,9 +446,12 @@ main() {
     echo "Commands (available after re-login or 'source /etc/profile.d/llm-tools.sh'):"
     echo "  llm-status          Show server status"
     echo "  llm-health          Health check"
-    echo "  llm-test            Test the API"
     echo "  llm-logs            View live logs"
     echo "  llm-switch          List/switch models"
+    echo ""
+    echo "Test scripts:"
+    echo "  $SCRIPT_DIR/test-local.sh    Test server locally"
+    echo "  $SCRIPT_DIR/test-dns.sh      Test via Cloudflare Tunnel"
     echo ""
     echo "Service control:"
     echo "  sudo systemctl start llama-server"
@@ -479,9 +461,19 @@ main() {
     echo "API endpoint:"
     echo "  http://$IP_ADDR:$LLAMA_PORT/v1/chat/completions"
     echo ""
-    
-    # Verify model file exists before attempting to start
+
+    # Source config to get API key and model info
     source /etc/llama-server.conf
+
+    if [[ -n "${LLAMA_API_KEY:-}" ]]; then
+        echo "API key:"
+        echo "  $LLAMA_API_KEY"
+        echo ""
+        echo "  Clients must send: -H 'Authorization: Bearer <key>'"
+        echo "  /health and /models are public (no auth needed)"
+        echo "  Remove LLAMA_API_KEY from /etc/llama-server.conf to disable"
+        echo ""
+    fi
     if [[ ! -f "$MODELS_DIR/$MODEL_FILE" ]]; then
         log_error "Model file not found: $MODELS_DIR/$MODEL_FILE"
         log_error "Available files:"
@@ -526,6 +518,7 @@ main() {
                     --group-add video \
                     --security-opt seccomp=unconfined \
                     -v /opt/llm/models:/models:ro \
+                    -e LLAMA_API_KEY="$LLAMA_API_KEY" \
                     "$CONTAINER_IMAGE" \
                     llama-server \
                         --no-mmap \
@@ -553,9 +546,16 @@ main() {
     echo ""
     echo "Try it out:"
     echo ""
-    echo "  curl http://$IP_ADDR:$LLAMA_PORT/v1/chat/completions \\"
-    echo "    -H 'Content-Type: application/json' \\"
-    echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+    if [[ -n "${LLAMA_API_KEY:-}" ]]; then
+        echo "  curl http://$IP_ADDR:$LLAMA_PORT/v1/chat/completions \\"
+        echo "    -H 'Content-Type: application/json' \\"
+        echo "    -H 'Authorization: Bearer $LLAMA_API_KEY' \\"
+        echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+    else
+        echo "  curl http://$IP_ADDR:$LLAMA_PORT/v1/chat/completions \\"
+        echo "    -H 'Content-Type: application/json' \\"
+        echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+    fi
     echo ""
 
     # If Cloudflare was configured, show that too
@@ -564,10 +564,29 @@ main() {
         if [[ -n "$CF_HOST" ]]; then
             echo "Via Cloudflare Tunnel:"
             echo ""
-            echo "  curl https://$CF_HOST/v1/chat/completions \\"
-            echo "    -H 'Content-Type: application/json' \\"
-            echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+            if [[ -n "${LLAMA_API_KEY:-}" ]]; then
+                echo "  curl https://$CF_HOST/v1/chat/completions \\"
+                echo "    -H 'Content-Type: application/json' \\"
+                echo "    -H 'Authorization: Bearer $LLAMA_API_KEY' \\"
+                echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+            else
+                echo "  curl https://$CF_HOST/v1/chat/completions \\"
+                echo "    -H 'Content-Type: application/json' \\"
+                echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+            fi
             echo ""
+        fi
+    fi
+
+    # Offer to run tests
+    echo ""
+    read -p "Run tests? (Y/n): " run_tests
+    if [[ ! "$run_tests" =~ ^[Nn] ]]; then
+        echo ""
+        "$SCRIPT_DIR/test-local.sh" || true
+        echo ""
+        if [[ -f /etc/cloudflared/config.yml ]]; then
+            "$SCRIPT_DIR/test-dns.sh" || true
         fi
     fi
 }
