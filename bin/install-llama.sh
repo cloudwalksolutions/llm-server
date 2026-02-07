@@ -135,18 +135,11 @@ phase4_model_download() {
     get_actual_user
     
     # Install huggingface-cli
-    if ! command -v huggingface-cli &> /dev/null; then
-        log_info "Installing huggingface-cli..."
-        pip3 install --break-system-packages "huggingface_hub[hf_transfer]"
-        # Ensure the binary is on PATH for all users
-        if [[ -f /usr/local/bin/huggingface-cli ]]; then
-            log_info "huggingface-cli installed to /usr/local/bin"
-        elif [[ -f /root/.local/bin/huggingface-cli ]]; then
-            ln -sf /root/.local/bin/huggingface-cli /usr/local/bin/huggingface-cli
-            log_info "Linked huggingface-cli to /usr/local/bin"
-        fi
-    else
-        log_info "huggingface-cli already installed"
+    log_info "Installing huggingface-cli..."
+    pip3 install --break-system-packages --root-user-action=ignore --upgrade huggingface_hub hf_transfer
+    # Symlink into /usr/local/bin if pip put it elsewhere
+    if [[ ! -f /usr/local/bin/huggingface-cli ]]; then
+        ln -sf "$(find /usr -name huggingface-cli -type f 2>/dev/null | head -1)" /usr/local/bin/huggingface-cli
     fi
 
     # Small model
