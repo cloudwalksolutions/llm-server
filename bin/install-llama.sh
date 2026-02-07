@@ -278,7 +278,7 @@ ExecStart=/usr/bin/podman run \
     llama-server \
         --no-mmap \
         -ngl 999 \
-        -fa \
+        -fa on \
         -c ${CONTEXT_SIZE} \
         -m /models/${MODEL_FILE} \
         --host 0.0.0.0 \
@@ -530,7 +530,7 @@ main() {
                     llama-server \
                         --no-mmap \
                         -ngl 999 \
-                        -fa \
+                        -fa on \
                         -c "$CONTEXT_SIZE" \
                         -m "/models/$MODEL_FILE" \
                         --host 0.0.0.0 \

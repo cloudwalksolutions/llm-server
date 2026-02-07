@@ -15,8 +15,16 @@ if [[ ! "$cf_ans" =~ ^[Yy] ]]; then
   exit 0
 fi
 
-read -p "Enter Tunnel name (e.g. llm-server): " CF_TUNNEL_NAME
-read -p "Enter hostname for Tunnel (e.g. llm.example.com): " CF_HOSTNAME
+# Reuse existing config if available — don't ask again
+if [[ -f "$CF_CONFIG" ]]; then
+  CF_HOSTNAME=$(grep 'hostname:' "$CF_CONFIG" | head -1 | awk '{print $3}')
+  EXISTING_TUNNEL_ID=$(grep '^tunnel:' "$CF_CONFIG" | awk '{print $2}')
+  CF_TUNNEL_NAME=$(cloudflared tunnel list --output json 2>/dev/null | jq -r ".[] | select(.id==\"$EXISTING_TUNNEL_ID\") | .name")
+  echo "[*] Using existing config: tunnel=$CF_TUNNEL_NAME hostname=$CF_HOSTNAME"
+else
+  read -p "Enter Tunnel name (e.g. llm-server): " CF_TUNNEL_NAME
+  read -p "Enter hostname for Tunnel (e.g. llm.example.com): " CF_HOSTNAME
+fi
 
 # Install cloudflared if missing
 if ! command -v cloudflared &> /dev/null; then
