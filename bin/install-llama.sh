@@ -142,6 +142,9 @@ phase4_model_download() {
         log_info "Hugging Face CLI already installed"
     fi
 
+    # Use the models dir for cache too — avoids filling up a small root partition
+    export HF_HUB_CACHE="$MODELS_DIR/.cache"
+
     # Small model
     SMALL_MODEL_PATH="$MODELS_DIR/$SMALL_MODEL_FILE"
     if [[ -f "$SMALL_MODEL_PATH" ]]; then
@@ -162,6 +165,9 @@ phase4_model_download() {
         hf download "$BEST_MODEL_REPO" "$BEST_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Best model downloaded ✓"
     fi
+
+    # Clean up cache after downloads complete
+    rm -rf "$MODELS_DIR/.cache"
     
     chown -R "$ACTUAL_USER:$ACTUAL_USER" "$MODELS_DIR"
     
