@@ -480,26 +480,68 @@ main() {
     echo "  http://$IP_ADDR:$LLAMA_PORT/v1/chat/completions"
     echo ""
     
+    # Verify model file exists before attempting to start
+    source /etc/llama-server.conf
+    if [[ ! -f "$MODELS_DIR/$MODEL_FILE" ]]; then
+        log_error "Model file not found: $MODELS_DIR/$MODEL_FILE"
+        log_error "Available files:"
+        ls -lh "$MODELS_DIR"/*.gguf 2>/dev/null || echo "  (none)"
+        exit 1
+    fi
+
     if [[ -f /tmp/reboot_required ]]; then
         echo "╔═══════════════════════════════════════════════════════════════╗"
-        echo "║  ⚠️  REBOOT REQUIRED                                          ║"
+        echo "║  REBOOT REQUIRED                                            ║"
         echo "╚═══════════════════════════════════════════════════════════════╝"
         echo ""
         echo "Kernel parameters were updated for GPU memory access."
+        echo "The llama-server service is enabled and will start on boot."
         echo ""
-        echo "Run now:"
-        echo "  sudo reboot"
-        echo ""
-        echo "After reboot, the server will start automatically."
-        echo "Check status with: llm-status"
-        echo ""
+        echo "Rebooting in 10 seconds... (Ctrl+C to cancel)"
+        sleep 10
         rm -f /tmp/reboot_required
+        reboot
     else
         log_info "Starting llama-server..."
         systemctl restart llama-server
 
-        echo "Server is starting up (may take 30-60 seconds to load model)..."
-        echo "Check status with: llm-status"
+        # Wait and verify the service actually started
+        log_info "Waiting for server to come up (this can take 30-60s)..."
+        for i in $(seq 1 60); do
+            if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$LLAMA_PORT/health" 2>/dev/null | grep -q "200"; then
+                log_info "Server is healthy!"
+                break
+            fi
+            # If the service died, don't keep waiting
+            if ! systemctl is-active --quiet llama-server; then
+                log_error "llama-server service died. Diagnosing..."
+                echo ""
+                echo "--- systemd logs ---"
+                journalctl -u llama-server --no-pager -n 20
+                echo ""
+                echo "--- attempting direct container run for error output ---"
+                podman run --rm \
+                    --device /dev/kfd \
+                    --device /dev/dri \
+                    --group-add video \
+                    --security-opt seccomp=unconfined \
+                    -v /opt/llm/models:/models:ro \
+                    "$CONTAINER_IMAGE" \
+                    llama-server \
+                        --no-mmap \
+                        -ngl 999 \
+                        -fa \
+                        -c "$CONTEXT_SIZE" \
+                        -m "/models/$MODEL_FILE" \
+                        --host 0.0.0.0 \
+                        --port "$LLAMA_PORT" \
+                        --metrics 2>&1 | head -50 || true
+                echo ""
+                log_error "Fix the issue above and re-run this script."
+                exit 1
+            fi
+            sleep 1
+        done
         echo ""
     fi
 
