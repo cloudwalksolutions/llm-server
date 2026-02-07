@@ -23,7 +23,8 @@ sudo tee /etc/systemd/system/${OLLAMA_SERVICE}.d/override.conf > /dev/null <<EOF
 Environment="OLLAMA_HOST=http://0.0.0.0:11434"
 EOF
 sudo systemctl daemon-reload
-sudo systemctl enable --now ${OLLAMA_SERVICE}
+sudo systemctl enable ${OLLAMA_SERVICE}
+sudo systemctl restart ${OLLAMA_SERVICE}
 
 echo "[*] Ollama service configured and restarted"
 

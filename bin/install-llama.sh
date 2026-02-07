@@ -134,24 +134,21 @@ phase4_model_download() {
     
     get_actual_user
     
-    # Install huggingface-cli
+    # Install huggingface-cli system-wide
     log_info "Installing huggingface-cli..."
-    sudo -u "$ACTUAL_USER" pip install --user "huggingface_hub[hf_transfer]" --quiet
-    
+    pip3 install "huggingface_hub[hf_transfer]" --quiet
+
     # Small model
     SMALL_MODEL_PATH="$MODELS_DIR/$SMALL_MODEL_FILE"
     if [[ -f "$SMALL_MODEL_PATH" ]]; then
         log_info "Small model already exists: $SMALL_MODEL_FILE"
     else
         log_info "Downloading small model: $SMALL_MODEL_FILE (~5GB)..."
-        sudo -u "$ACTUAL_USER" bash -c "
-            export PATH=\"$ACTUAL_USER_HOME/.local/bin:\$PATH\"
-            export HF_HUB_ENABLE_HF_TRANSFER=1
-            huggingface-cli download $SMALL_MODEL_REPO $SMALL_MODEL_FILE --local-dir $MODELS_DIR
-        "
+        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
+            "$SMALL_MODEL_REPO" "$SMALL_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Small model downloaded ✓"
     fi
-    
+
     # Best 32B model
     BEST_MODEL_PATH="$MODELS_DIR/$BEST_MODEL_FILE"
     if [[ -f "$BEST_MODEL_PATH" ]]; then
@@ -159,11 +156,8 @@ phase4_model_download() {
     else
         log_info "Downloading best 32B model: $BEST_MODEL_FILE (~20GB)..."
         log_info "This will take a while, please be patient..."
-        sudo -u "$ACTUAL_USER" bash -c "
-            export PATH=\"$ACTUAL_USER_HOME/.local/bin:\$PATH\"
-            export HF_HUB_ENABLE_HF_TRANSFER=1
-            huggingface-cli download $BEST_MODEL_REPO $BEST_MODEL_FILE --local-dir $MODELS_DIR
-        "
+        HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download \
+            "$BEST_MODEL_REPO" "$BEST_MODEL_FILE" --local-dir "$MODELS_DIR"
         log_info "Best model downloaded ✓"
     fi
     
@@ -233,8 +227,9 @@ esac
 EOF
     chmod +x /opt/llm/bin/llm-switch
 
-    # Create config file
-    cat > /etc/llama-server.conf << EOF
+    # Create config file (only if missing — preserve user changes from llm-switch)
+    if [[ ! -f /etc/llama-server.conf ]]; then
+        cat > /etc/llama-server.conf << EOF
 # LLaMA Server Configuration
 # Edit and restart: sudo systemctl restart llama-server
 # Switch models: llm-switch <model-filename>
@@ -245,6 +240,10 @@ CONTEXT_SIZE=$CONTEXT_SIZE
 MODEL_FILE=$DEFAULT_MODEL
 CONTAINER_IMAGE=$CONTAINER_IMAGE
 EOF
+        log_info "Created /etc/llama-server.conf"
+    else
+        log_info "/etc/llama-server.conf already exists, preserving"
+    fi
 
     # Create systemd service using podman directly
     cat > /etc/systemd/system/llama-server.service << 'EOF'
@@ -489,7 +488,7 @@ main() {
         rm -f /tmp/reboot_required
     else
         log_info "Starting llama-server..."
-        systemctl start llama-server
+        systemctl restart llama-server
 
         echo "Server is starting up (may take 30-60 seconds to load model)..."
         echo "Check status with: llm-status"
