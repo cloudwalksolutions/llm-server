@@ -11,24 +11,18 @@ LLAMA_PORT="${LLAMA_PORT:-8080}"
 LLAMA_HOST="${LLAMA_HOST:-0.0.0.0}"
 MODELS_DIR="/opt/llm/models"
 CONTEXT_SIZE="${CONTEXT_SIZE:-32768}"
-TOOLBOX_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
-TOOLBOX_NAME="llama-server"
+CONTAINER_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
 
 # Models to download
-# Small & Fast: Qwen3-8B (Q4_K_M) - ~5GB, great for quick tasks
 SMALL_MODEL_REPO="Qwen/Qwen3-8B-GGUF"
 SMALL_MODEL_FILE="qwen3-8b-q4_k_m.gguf"
-SMALL_MODEL_NAME="qwen3-8b"
 
-# Best 32B: DeepSeek-R1-Distill-Qwen-32B - Top reasoning benchmarks, beats o1-mini
 BEST_MODEL_REPO="unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF"
 BEST_MODEL_FILE="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
-BEST_MODEL_NAME="deepseek-r1-32b"
 
-# Default to the best model
 DEFAULT_MODEL="$BEST_MODEL_FILE"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -40,7 +34,6 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
-# Check if running as root
 check_sudo() {
     if [[ $EUID -ne 0 ]]; then
         log_error "This script must be run with sudo"
@@ -49,7 +42,6 @@ check_sudo() {
     fi
 }
 
-# Get actual user (not root)
 get_actual_user() {
     ACTUAL_USER="${SUDO_USER:-$USER}"
     if [[ "$ACTUAL_USER" == "root" ]]; then
@@ -58,6 +50,7 @@ get_actual_user() {
     fi
     ACTUAL_USER_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
     ACTUAL_USER_ID=$(id -u "$ACTUAL_USER")
+    ACTUAL_USER_GID=$(id -g "$ACTUAL_USER")
 }
 
 # =============================================================================
@@ -70,7 +63,7 @@ phase1_system_setup() {
     dnf upgrade -y
     
     log_info "Installing required packages..."
-    dnf install -y toolbox podman python3-pip git curl wget jq
+    dnf install -y podman python3-pip git curl wget jq
     
     log_info "Configuring kernel parameters for 128GB unified GPU memory..."
     
@@ -107,34 +100,29 @@ phase2_user_setup() {
 }
 
 # =============================================================================
-# Phase 3: Container Setup
+# Phase 3: Container Setup (using podman directly)
 # =============================================================================
 phase3_container_setup() {
     log_step "Phase 3: Container setup"
-    
+
     get_actual_user
-    
+
     log_info "Pulling llama.cpp container image..."
-    sudo -u "$ACTUAL_USER" podman pull "$TOOLBOX_IMAGE"
-    
-    # Remove existing toolbox if present
-    if sudo -u "$ACTUAL_USER" toolbox list 2>/dev/null | grep -q "$TOOLBOX_NAME"; then
-        log_info "Removing existing toolbox..."
-        sudo -u "$ACTUAL_USER" toolbox rm -f "$TOOLBOX_NAME" 2>/dev/null || true
-    fi
-    
-    log_info "Creating toolbox container..."
-    sudo -u "$ACTUAL_USER" toolbox create "$TOOLBOX_NAME" \
-        --image "$TOOLBOX_IMAGE" \
-        -- --device /dev/dri --group-add video --security-opt seccomp=unconfined
-    
-    log_info "Verifying GPU access in container..."
-    if sudo -u "$ACTUAL_USER" toolbox run -c "$TOOLBOX_NAME" llama-cli --list-devices 2>/dev/null | grep -q "Vulkan\|AMD"; then
-        log_info "GPU detected in container ✓"
+    podman pull "$CONTAINER_IMAGE"
+
+    log_info "Testing GPU access..."
+    if podman run --rm \
+        --device /dev/kfd \
+        --device /dev/dri \
+        --group-add video \
+        --security-opt seccomp=unconfined \
+        "$CONTAINER_IMAGE" \
+        ls /dev/dri 2>/dev/null | grep -q "render"; then
+        log_info "GPU devices accessible in container ✓"
     else
-        log_warn "GPU not detected yet - may work after reboot"
+        log_warn "GPU devices may not be ready yet - will work after reboot"
     fi
-    
+
     log_info "Phase 3 complete ✓"
 }
 
@@ -199,19 +187,17 @@ phase5_service_setup() {
     # Create model switcher script
     cat > /opt/llm/bin/llm-switch << 'EOF'
 #!/bin/bash
-# Switch the active LLM model
-
 MODELS_DIR="/opt/llm/models"
 CONFIG_FILE="/etc/llama-server.conf"
 
 list_models() {
     echo "Available models:"
-    current=$(grep "^MODEL_PATH=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    current=$(grep "^MODEL_FILE=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     for f in "$MODELS_DIR"/*.gguf; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f")
         size=$(du -h "$f" | cut -f1)
-        if [[ "$f" == "$current" ]]; then
+        if [[ "$name" == "$current" ]]; then
             echo "  * $name ($size) [ACTIVE]"
         else
             echo "    $name ($size)"
@@ -222,14 +208,14 @@ list_models() {
 switch_model() {
     local model="$1"
     local model_path="$MODELS_DIR/$model"
-    
+
     if [[ ! -f "$model_path" ]]; then
         echo "Error: Model not found: $model"
         echo "Run 'llm-switch' to see available models"
         exit 1
     fi
-    
-    sudo sed -i "s|^MODEL_PATH=.*|MODEL_PATH=$model_path|" "$CONFIG_FILE"
+
+    sudo sed -i "s|^MODEL_FILE=.*|MODEL_FILE=$model|" "$CONFIG_FILE"
     echo "Switched to: $model"
     echo ""
     echo "Restart service to apply:"
@@ -246,35 +232,7 @@ case "${1:-}" in
 esac
 EOF
     chmod +x /opt/llm/bin/llm-switch
-    
-    # Create the wrapper script
-    cat > /opt/llm/bin/run-llama-server.sh << 'EOF'
-#!/bin/bash
-set -euo pipefail
 
-# Load config
-source /etc/llama-server.conf
-
-# Wait for GPU
-sleep 3
-
-echo "Starting llama-server..."
-echo "  Model: $MODEL_PATH"
-echo "  Port: $LLAMA_PORT"
-echo "  Context: $CONTEXT_SIZE"
-
-exec llama-server \
-    --no-mmap \
-    -ngl 999 \
-    -fa on \
-    -c "$CONTEXT_SIZE" \
-    -m "$MODEL_PATH" \
-    --host "$LLAMA_HOST" \
-    --port "$LLAMA_PORT" \
-    --metrics
-EOF
-    chmod +x /opt/llm/bin/run-llama-server.sh
-    
     # Create config file
     cat > /etc/llama-server.conf << EOF
 # LLaMA Server Configuration
@@ -284,11 +242,12 @@ EOF
 LLAMA_PORT=$LLAMA_PORT
 LLAMA_HOST=$LLAMA_HOST
 CONTEXT_SIZE=$CONTEXT_SIZE
-MODEL_PATH=$MODELS_DIR/$DEFAULT_MODEL
+MODEL_FILE=$DEFAULT_MODEL
+CONTAINER_IMAGE=$CONTAINER_IMAGE
 EOF
-    
-    # Create systemd service
-    cat > /etc/systemd/system/llama-server.service << EOF
+
+    # Create systemd service using podman directly
+    cat > /etc/systemd/system/llama-server.service << 'EOF'
 [Unit]
 Description=LLaMA.cpp Inference Server
 After=network.target
@@ -296,12 +255,30 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$ACTUAL_USER
-Group=$ACTUAL_USER
 EnvironmentFile=/etc/llama-server.conf
-Environment="XDG_RUNTIME_DIR=/run/user/$ACTUAL_USER_ID"
 
-ExecStart=/usr/bin/toolbox run -c $TOOLBOX_NAME /opt/llm/bin/run-llama-server.sh
+ExecStartPre=-/usr/bin/podman rm -f llama-server-container
+ExecStart=/usr/bin/podman run \
+    --name llama-server-container \
+    --rm \
+    --device /dev/kfd \
+    --device /dev/dri \
+    --group-add video \
+    --security-opt seccomp=unconfined \
+    -v /opt/llm/models:/models:ro \
+    -p ${LLAMA_PORT}:${LLAMA_PORT} \
+    ${CONTAINER_IMAGE} \
+    llama-server \
+        --no-mmap \
+        -ngl 999 \
+        -fa \
+        -c ${CONTEXT_SIZE} \
+        -m /models/${MODEL_FILE} \
+        --host 0.0.0.0 \
+        --port ${LLAMA_PORT} \
+        --metrics
+
+ExecStop=/usr/bin/podman stop llama-server-container
 
 Restart=always
 RestartSec=10
@@ -379,12 +356,15 @@ echo "  LLaMA Server Status"
 echo "═══════════════════════════════════════════════════════"
 echo ""
 echo "Service: $(systemctl is-active llama-server 2>/dev/null || echo 'unknown')"
-echo "Model:   $(basename ${MODEL_PATH:-unknown})"
+echo "Model:   ${MODEL_FILE:-unknown}"
 echo "Port:    ${LLAMA_PORT:-8080}"
 echo "Context: ${CONTEXT_SIZE:-32768} tokens"
 echo ""
 echo "Memory:"
 free -h | grep -E "^Mem:"
+echo ""
+echo "Container:"
+podman ps --filter name=llama-server-container --format "{{.Status}}" 2>/dev/null || echo "not running"
 echo ""
 echo "Health:"
 /opt/llm/bin/llm-health 2>/dev/null || echo "Server not running"
