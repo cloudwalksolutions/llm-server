@@ -449,10 +449,10 @@ main() {
     echo "  llm-logs            View live logs"
     echo "  llm-switch          List/switch models"
     echo ""
+    TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests"
     echo "Test scripts:"
-    echo "  $SCRIPT_DIR/test-local.sh    Test server locally"
-    echo "  $SCRIPT_DIR/test-dns.sh      Test via Cloudflare Tunnel"
-    echo "  $SCRIPT_DIR/test-remote.sh   Test from anywhere (pass hostname as arg)"
+    echo "  $TESTS_DIR/test-local.sh     Test server locally"
+    echo "  $TESTS_DIR/test-remote.sh    Test from anywhere (hostname as arg or auto-detected)"
     echo ""
     echo "Service control:"
     echo "  sudo systemctl start llama-server"
@@ -584,10 +584,10 @@ main() {
     read -p "Run tests? (Y/n): " run_tests
     if [[ ! "$run_tests" =~ ^[Nn] ]]; then
         echo ""
-        "$SCRIPT_DIR/test-local.sh" || true
+        "$TESTS_DIR/test-local.sh" || true
         echo ""
         if [[ -f /etc/cloudflared/config.yml ]]; then
-            "$SCRIPT_DIR/test-dns.sh" || true
+            "$TESTS_DIR/test-remote.sh" || true
         fi
     fi
 }

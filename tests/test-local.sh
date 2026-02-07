@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test LLM server over Cloudflare Tunnel (DNS)
+# Test LLM server locally
 set -euo pipefail
 
 GREEN='\033[0;32m'
@@ -8,27 +8,15 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-if [[ ! -f /etc/cloudflared/config.yml ]]; then
-    echo -e "${RED}FAIL${NC}: No Cloudflare Tunnel configured"
-    exit 1
-fi
-
-source /etc/llama-server.conf 2>/dev/null || true
-
-CF_HOST=$(grep 'hostname:' /etc/cloudflared/config.yml | head -1 | awk '{print $3}')
-if [[ -z "$CF_HOST" ]]; then
-    echo -e "${RED}FAIL${NC}: Could not read hostname from /etc/cloudflared/config.yml"
-    exit 1
-fi
-
-ENDPOINT="https://$CF_HOST"
+source /etc/llama-server.conf 2>/dev/null || LLAMA_PORT=8080
+ENDPOINT="http://localhost:$LLAMA_PORT"
 
 AUTH_HEADER=()
 if [[ -n "${LLAMA_API_KEY:-}" ]]; then
     AUTH_HEADER=(-H "Authorization: Bearer $LLAMA_API_KEY")
 fi
 
-echo -e "${BLUE}Testing LLaMA server (DNS: $CF_HOST)${NC}"
+echo -e "${BLUE}Testing LLaMA server (local)${NC}"
 echo -e "Endpoint: ${BLUE}$ENDPOINT${NC}"
 if [[ -n "${LLAMA_API_KEY:-}" ]]; then
     echo -e "Auth:     ${BLUE}Bearer token${NC}"
@@ -38,11 +26,10 @@ echo ""
 # Health check
 health=$(curl -s -o /dev/null -w "%{http_code}" "$ENDPOINT/health" 2>/dev/null)
 if [[ "$health" != "200" ]]; then
-    echo -e "${RED}FAIL${NC}: Server not reachable via tunnel (HTTP $health)"
+    echo -e "${RED}FAIL${NC}: Server not healthy (HTTP $health)"
     echo ""
-    echo -e "  cloudflared service:  ${YELLOW}$(systemctl is-active cloudflared 2>/dev/null || echo 'unknown')${NC}"
     echo -e "  llama-server service: ${YELLOW}$(systemctl is-active llama-server 2>/dev/null || echo 'unknown')${NC}"
-    echo -e "  DNS resolves:         ${YELLOW}$(host "$CF_HOST" 2>/dev/null | head -1 || echo 'FAIL')${NC}"
+    echo -e "  container:            ${YELLOW}$(podman ps --filter name=llama-server-container --format '{{.Status}}' 2>/dev/null || echo 'not running')${NC}"
     exit 1
 fi
 echo -e "Health: ${GREEN}OK${NC}"
@@ -89,8 +76,8 @@ curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
         "stream": true
     }' 2>/dev/null \
     | sed -u 's/^data: //' \
-    | grep -v '^\[DONE\]' \
-    | jq --unbuffered -j '.choices[0].delta | if .content and .content != "" then .content elif .reasoning_content then .reasoning_content else empty end' 2>/dev/null
+    | { grep -v '^\[DONE\]' || true; } \
+    | jq --unbuffered -j '.choices[0].delta | if .content and .content != "" then .content elif .reasoning_content then .reasoning_content else empty end' 2>/dev/null || true
 echo ""
 echo ""
-echo -e "${GREEN}PASS${NC}: DNS test complete"
+echo -e "${GREEN}PASS${NC}: Local test complete"

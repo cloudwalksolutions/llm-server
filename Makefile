@@ -6,6 +6,10 @@ ssh-n1:
 
 ssh-l1:
 	@echo "SSH into LLM node 1..."
-	@ssh llm-user@192.168.1.11
-	# @ssh llm-user@ssh.cloudwalksolutions.ai
+	# @ssh walkerobrien@llm.cloudwalksolutions.ai
+	@ssh walkerobrien@192.168.1.168
+
+.PHONY: test
+test:
+	./tests/test-remote.sh
 

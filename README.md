@@ -8,22 +8,14 @@ Two backends are supported:
 
 | Backend | Script | OS | Port | Use case |
 |---------|--------|----|------|----------|
-| **Ollama** | `bin/install-ollama.sh` | Ubuntu | 11434 | Quick setup, broad model support |
 | **llama.cpp** | `bin/install-llama.sh` | Fedora | 8080 | AMD GPU (Strix Halo), Vulkan acceleration |
+| **Ollama** | `bin/install-ollama.sh` | Ubuntu | 11434 | Quick setup, broad model support |
 
 Both scripts offer optional Cloudflare Tunnel setup at the end via a shared `bin/setup-cloudflare.sh` script.
 
 ## Quick Start
 
-### Ollama (Ubuntu)
-
-```bash
-sudo ./bin/install-ollama.sh
-```
-
-Installs Ollama, configures systemd to bind on `0.0.0.0:11434`, opens the firewall, and optionally sets up a Cloudflare Tunnel.
-
-### llama.cpp (Fedora / AMD Strix Halo)
+### llama.cpp (Fedora / AMD Strix Halo) - Recommended for AMD GPU users
 
 ```bash
 sudo ./bin/install-llama.sh
@@ -40,6 +32,14 @@ llm-test      # Test the API
 llm-logs      # View live logs
 llm-switch    # List/switch models
 ```
+
+### Ollama (Ubuntu) - Recommended for quick setup and broad model support
+
+```bash
+sudo ./bin/install-ollama.sh
+```
+
+Installs Ollama, configures systemd to bind on `0.0.0.0:11434`, opens the firewall, and optionally sets up a Cloudflare Tunnel.
 
 ## Cloudflare Tunnel (Optional)
 
