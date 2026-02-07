@@ -40,7 +40,7 @@ echo "Sending test prompt..."
 echo ""
 result=$(curl -s --max-time 120 "$ENDPOINT/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    "${AUTH_HEADER[@]}" \
+    ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
     -d '{
         "messages": [{"role": "user", "content": "Say hello in exactly 5 words."}],
         "max_tokens": 50,
@@ -48,7 +48,7 @@ result=$(curl -s --max-time 120 "$ENDPOINT/v1/chat/completions" \
     }' 2>/dev/null)
 
 if command -v jq &>/dev/null; then
-    response=$(echo "$result" | jq -r '.choices[0].message.content // empty')
+    response=$(echo "$result" | jq -r '.choices[0].message | if .content and .content != "" then .content elif .reasoning_content then .reasoning_content else empty end')
     if [[ -n "$response" ]]; then
         echo -e "Response: ${GREEN}$response${NC}"
         echo ""
@@ -68,7 +68,7 @@ echo -e "${BLUE}Streaming test${NC}..."
 echo ""
 curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    "${AUTH_HEADER[@]}" \
+    ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
     -d '{
         "messages": [{"role": "user", "content": "Explain in detail why Michael Jordan is greater than LeBron James."}],
         "max_tokens": 500,
@@ -77,7 +77,7 @@ curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
     }' 2>/dev/null \
     | sed -u 's/^data: //' \
     | grep -v '^\[DONE\]' \
-    | jq --unbuffered -j 'if .choices[0].delta.content then .choices[0].delta.content else empty end' 2>/dev/null
+    | jq --unbuffered -j '.choices[0].delta | if .content and .content != "" then .content elif .reasoning_content then .reasoning_content else empty end' 2>/dev/null
 echo ""
 echo ""
 echo -e "${GREEN}PASS${NC}: Local test complete"

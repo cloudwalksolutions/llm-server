@@ -452,6 +452,7 @@ main() {
     echo "Test scripts:"
     echo "  $SCRIPT_DIR/test-local.sh    Test server locally"
     echo "  $SCRIPT_DIR/test-dns.sh      Test via Cloudflare Tunnel"
+    echo "  $SCRIPT_DIR/test-remote.sh   Test from anywhere (pass hostname as arg)"
     echo ""
     echo "Service control:"
     echo "  sudo systemctl start llama-server"
