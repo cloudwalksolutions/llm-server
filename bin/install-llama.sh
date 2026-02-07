@@ -63,7 +63,7 @@ phase1_system_setup() {
     dnf upgrade -y
     
     log_info "Installing required packages..."
-    dnf install -y podman python3 git curl wget jq
+    dnf install -y podman python3 python3-pip git curl wget jq
     
     log_info "Configuring kernel parameters for 128GB unified GPU memory..."
     
@@ -138,9 +138,10 @@ phase4_model_download() {
     HF_CLI="/opt/llm/venv/bin/huggingface-cli"
     if [[ ! -x "$HF_CLI" ]]; then
         log_info "Creating Python venv and installing huggingface-cli..."
-        python3 -m venv /opt/llm/venv
+        python3 -m venv --clear /opt/llm/venv
         /opt/llm/venv/bin/pip install --upgrade pip --quiet
         /opt/llm/venv/bin/pip install "huggingface_hub[hf_transfer]" --quiet
+        log_info "huggingface-cli installed at $HF_CLI"
     else
         log_info "huggingface-cli already installed"
     fi
