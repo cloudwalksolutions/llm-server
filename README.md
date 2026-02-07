@@ -1,115 +1,77 @@
-# Ollama Server
+# LLM Server
 
-This guide provides step-by-step instructions on how to set up an Ollama server on Ubuntu,
-allowing you to run and serve large language models (LLMs) like Llama 3, Mistral, and more.
-The server will be accessible both locally and remotely, with optional exposure via Cloudflare Tunnel.
+Automated setup scripts for running local LLM inference servers with optional Cloudflare Tunnel exposure.
 
-## Prerequisites
+Two backends are supported:
 
-* Ubuntu 22.04 LTS or later with sudo access
-* 8–16 GB RAM (more if running larger models)
-* SSH access to the server
-* (Optional) Cloudflare account and domain for Tunnel exposure
+| Backend | Script | OS | Port | Use case |
+|---------|--------|----|------|----------|
+| **Ollama** | `bin/install-ollama.sh` | Ubuntu | 11434 | Quick setup, broad model support |
+| **llama.cpp** | `bin/install-llama.sh` | Fedora | 8080 | AMD GPU (Strix Halo), Vulkan acceleration |
 
-## 1. Install Ollama
+Both scripts offer optional Cloudflare Tunnel setup at the end via a shared `bin/setup-cloudflare.sh` script.
 
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama --version
-```
+## Quick Start
 
-## 2. Configure systemd to Listen Externally
-
-By default, Ollama binds to 127.0.0.1. To bind on all interfaces:
+### Ollama (Ubuntu)
 
 ```bash
-sudo systemctl edit ollama.service
+sudo ./bin/install-ollama.sh
 ```
 
-Add under `[Service]`:
+Installs Ollama, configures systemd to bind on `0.0.0.0:11434`, opens the firewall, and optionally sets up a Cloudflare Tunnel.
 
-```ini
-Environment="OLLAMA_HOST=http://0.0.0.0:11434"
-```
-
-Reload and restart:
+### llama.cpp (Fedora / AMD Strix Halo)
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl restart ollama.service
+sudo ./bin/install-llama.sh
 ```
 
-Verify listener:
+Sets up kernel params for 128GB unified GPU memory, pulls a Vulkan-accelerated llama.cpp container, downloads models (Qwen3-8B + DeepSeek-R1-32B), creates a systemd service, and optionally sets up a Cloudflare Tunnel.
+
+After install, useful commands are available:
+
+```
+llm-status    # Show server status
+llm-health    # Health check
+llm-test      # Test the API
+llm-logs      # View live logs
+llm-switch    # List/switch models
+```
+
+## Cloudflare Tunnel (Optional)
+
+Both install scripts call `bin/setup-cloudflare.sh` at the end. It will prompt you interactively:
+
+```
+Do you want to setup Cloudflare Tunnel? (y/N):
+```
+
+If you accept, it will:
+
+1. Install `cloudflared` (detects apt vs dnf)
+2. Authenticate with Cloudflare
+3. Create or reuse a named tunnel
+4. Write `/etc/cloudflared/config.yml` pointing to the local service port
+5. Install and enable the `cloudflared` systemd service
+
+You can also run it standalone:
 
 ```bash
-sudo ss -lnpt | grep 11434
-# should show 0.0.0.0:11434
+sudo ./bin/setup-cloudflare.sh <port>
 ```
 
-## 3. Open the Firewall
-
-Allow external TCP traffic on port 11434:
+## Testing
 
 ```bash
-sudo ufw allow 11434/tcp
-sudo ufw reload
+# Ollama
+curl http://localhost:11434/v1/models
+
+# llama.cpp
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 50}'
+
+# Via Cloudflare Tunnel
+curl https://your-hostname.example.com/v1/models
 ```
-
-## 4. (Optional) Expose via Cloudflare Tunnel
-
-### 4.1 Install `cloudflared`
-
-```bash
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-sudo apt install ./cloudflared-linux-amd64.deb
-```
-
-### 4.2 Authenticate & Create Tunnel
-
-```bash
-cloudflared tunnel login
-cloudflared tunnel create ollama-tunnel
-```
-
-### 4.3 Configure Tunnel
-
-Create `/etc/cloudflared/config.yml`:
-
-```yaml
-tunnel: <TUNNEL-UUID>
-credentials-file: /etc/cloudflared/<TUNNEL-UUID>.json
-ingress:
-  - hostname: ollama.example.com
-    service: http://localhost:11434
-  - service: http_status:404
-```
-
-### 4.4 DNS Mapping
-
-In Cloudflare DNS, add a CNAME:
-
-* Name: `ollama`
-* Target: `<TUNNEL-UUID>.cfargotunnel.com`
-* Proxy: Proxied (orange cloud)
-
-### 4.5 Run Tunnel as Service
-
-```bash
-sudo cloudflared service install
-sudo systemctl enable --now cloudflared
-```
-
-## 5. Test Your Server
-
-* **Local**:
-
-  ```bash
-  curl http://localhost:11434/v1/models
-  ```
-* **Remote (Cloudflare)**:
-
-  ```bash
-  curl https://ollama.example.com/v1/models
-  ```
-
-Your Ollama server is now installed, bound to all interfaces, firewall-open, and optionally exposed globally via Cloudflare Tunnel. Enjoy serving LLMs!
