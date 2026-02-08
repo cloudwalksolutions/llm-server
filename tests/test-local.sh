@@ -8,7 +8,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-source /etc/llama-server.conf 2>/dev/null || LLAMA_PORT=8080
+if [[ -f /etc/llama-server.conf ]]; then
+    source /etc/llama-server.conf
+fi
+LLAMA_PORT="${LLAMA_PORT:-8080}"
 ENDPOINT="http://localhost:$LLAMA_PORT"
 
 AUTH_HEADER=()
@@ -71,7 +74,7 @@ curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
     ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
     -d '{
         "messages": [{"role": "user", "content": "Explain in detail why Michael Jordan is greater than LeBron James."}],
-        "max_tokens": 500,
+        "max_tokens": 50,
         "temperature": 0.7,
         "stream": true
     }' 2>/dev/null \

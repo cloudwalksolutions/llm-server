@@ -4,6 +4,8 @@
 #   or:  LLM_HOST=llm.example.com LLAMA_API_KEY=xxx ./test-remote.sh
 set -euo pipefail
 
+source .env 2>/dev/null || true
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -100,7 +102,7 @@ curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
     ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
     -d '{
         "messages": [{"role": "user", "content": "Explain in detail why Michael Jordan is greater than LeBron James."}],
-        "max_tokens": 500,
+        "max_tokens": 50,
         "temperature": 0.7,
         "stream": true
     }' 2>/dev/null \
