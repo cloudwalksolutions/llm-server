@@ -17,10 +17,13 @@ CONTAINER_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
 SMALL_MODEL_REPO="Qwen/Qwen3-8B-GGUF"
 SMALL_MODEL_FILE="Qwen3-8B-Q4_K_M.gguf"
 
+MID_MODEL_REPO="Qwen/Qwen3-14B-GGUF"
+MID_MODEL_FILE="Qwen3-14B-Q4_K_M.gguf"
+
 BEST_MODEL_REPO="unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF"
 BEST_MODEL_FILE="DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf"
 
-DEFAULT_MODEL="$BEST_MODEL_FILE"
+DEFAULT_MODEL="$MID_MODEL_FILE"
 
 # Colors
 RED='\033[0;31m'
@@ -155,6 +158,16 @@ phase4_model_download() {
         log_info "Small model downloaded ✓"
     fi
 
+    # 14B thinking model (supports both thinking and content modes)
+    MID_MODEL_PATH="$MODELS_DIR/$MID_MODEL_FILE"
+    if [[ -f "$MID_MODEL_PATH" ]]; then
+        log_info "14B model already exists: $MID_MODEL_FILE"
+    else
+        log_info "Downloading 14B thinking model: $MID_MODEL_FILE (~8GB)..."
+        hf download "$MID_MODEL_REPO" "$MID_MODEL_FILE" --local-dir "$MODELS_DIR"
+        log_info "14B model downloaded ✓"
+    fi
+
     # Best 32B model
     BEST_MODEL_PATH="$MODELS_DIR/$BEST_MODEL_FILE"
     if [[ -f "$BEST_MODEL_PATH" ]]; then
@@ -174,8 +187,9 @@ phase4_model_download() {
     log_info "Phase 4 complete ✓"
     echo ""
     log_info "Downloaded models:"
-    echo "  - $SMALL_MODEL_FILE (fast, for simple tasks)"
-    echo "  - $BEST_MODEL_FILE (best quality, for complex reasoning)"
+    echo "  - $SMALL_MODEL_FILE (fast, ~5GB)"
+    echo "  - $MID_MODEL_FILE (thinking+content, ~8GB)"
+    echo "  - $BEST_MODEL_FILE (best quality, ~20GB)"
 }
 
 # =============================================================================
@@ -285,6 +299,7 @@ ExecStart=/usr/bin/podman run \
         -ngl 999 \
         -fa on \
         -c ${CONTEXT_SIZE} \
+        --models-dir /models \
         -m /models/${MODEL_FILE} \
         --host 0.0.0.0 \
         --port ${LLAMA_PORT} \
@@ -441,7 +456,8 @@ main() {
     echo ""
     echo "Models installed:"
     echo "  • $SMALL_MODEL_FILE (fast, ~5GB)"
-    echo "  • $BEST_MODEL_FILE (best, ~20GB) [DEFAULT]"
+    echo "  • $MID_MODEL_FILE (thinking+content, ~8GB) [DEFAULT]"
+    echo "  • $BEST_MODEL_FILE (best, ~20GB)"
     echo ""
     echo "Commands (available after re-login or 'source /etc/profile.d/llm-tools.sh'):"
     echo "  llm-status          Show server status"

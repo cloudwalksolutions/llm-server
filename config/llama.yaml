@@ -32,9 +32,9 @@ llama:
   cache_reuse: 256
 
   # Context window size in tokens
-  # Options: 8192, 16384, 32768
-  # Higher = more memory usage, longer prompts supported
-  context_size: 32768
+  # Options: 32768, 65536, 131072
+  # Higher = more memory usage (~4GB KV per slot at 65536 with f16)
+  context_size: 65536
 
 # System resource limits (usually don't need to change)
 resources:

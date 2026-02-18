@@ -124,6 +124,7 @@ ExecStart=/usr/bin/podman run \
         --threads-http ${THREADS_HTTP} \
         --cache-type-k f16 \
         --cache-type-v f16 \
+        --models-dir /models \
         -m /models/${MODEL_FILE} \
         --host 0.0.0.0 \
         --port ${LLAMA_PORT} \

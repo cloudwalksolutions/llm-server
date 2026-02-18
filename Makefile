@@ -24,7 +24,13 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test          Run API tests"
+	@echo "  make test-models   Run model selection tests"
 	@echo "  make benchmark     Run load tests (k6)"
+	@echo ""
+	@echo "Models:"
+	@echo "  make list-models                                List remote models"
+	@echo "  make add-model REPO=org/repo MODEL=file.gguf   Download model"
+	@echo "  make switch-model MODEL=file.gguf              Switch active model"
 
 .PHONY: setup
 setup:
@@ -74,3 +80,19 @@ test:
 .PHONY: benchmark
 benchmark:
 	@./scripts/benchmark.sh
+
+.PHONY: list-models
+list-models:
+	@./scripts/list-models.sh
+
+.PHONY: add-model
+add-model:
+	@./scripts/add-model.sh $(REPO) $(MODEL)
+
+.PHONY: switch-model
+switch-model:
+	@./scripts/switch-model.sh $(MODEL)
+
+.PHONY: test-models
+test-models:
+	@./tests/test-model-selection.sh
