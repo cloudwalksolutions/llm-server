@@ -1,12 +1,109 @@
 #!/usr/bin/env bash
 # Shared Cloudflare Tunnel setup — called by install-ollama.sh and install-llama.sh
 # Usage: sudo ./setup-cloudflare.sh <local-service-port>
+#        sudo ./setup-cloudflare.sh --reconfigure
 
 set -euo pipefail
 
-SERVICE_PORT="${1:?Usage: $0 <local-service-port>}"
 CF_CONFIG_DIR="/etc/cloudflared"
 CF_CONFIG="$CF_CONFIG_DIR/config.yml"
+
+# Validate hostname — Cloudflare Universal SSL only covers *.domain.tld (one level)
+# Sub-subdomains like a.b.domain.tld will fail TLS handshake
+validate_hostname() {
+  local host="$1"
+  # Count dots: a.b.com = 2 dots (ok), a.b.c.com = 3 dots (sub-subdomain)
+  local dot_count
+  dot_count=$(echo "$host" | tr -cd '.' | wc -c)
+  if [[ "$dot_count" -ge 3 ]]; then
+    local suggested
+    # Get everything before the base domain (last two parts) and convert dots to hyphens
+    local base_domain
+    base_domain=$(echo "$host" | rev | cut -d. -f1-2 | rev)
+    local prefix
+    prefix=$(echo "$host" | rev | cut -d. -f3- | rev | tr '.' '-')
+    suggested="${prefix}.${base_domain}"
+    echo ""
+    echo "[!] WARNING: '$host' is a sub-subdomain."
+    echo "    Cloudflare Universal SSL only covers *.$(echo "$host" | rev | cut -d. -f1-2 | rev)"
+    echo "    HTTPS will fail with a TLS handshake error."
+    echo ""
+    read -p "    Use '$suggested' instead? (Y/n): " fix_ans
+    if [[ ! "$fix_ans" =~ ^[Nn] ]]; then
+      CF_HOSTNAME="$suggested"
+      echo "[*] Using: $CF_HOSTNAME"
+    else
+      echo "[*] Keeping: $host (HTTPS may not work without Advanced Certificate Manager)"
+    fi
+  fi
+}
+
+# Handle --reconfigure mode
+if [[ "${1:-}" == "--reconfigure" ]]; then
+  if [[ ! -f "$CF_CONFIG" ]]; then
+    echo "[!] No existing tunnel config found at $CF_CONFIG"
+    echo "    Run the install script first to set up a tunnel."
+    exit 1
+  fi
+
+  CF_HOSTNAME=$(grep 'hostname:' "$CF_CONFIG" | head -1 | awk '{print $3}')
+  EXISTING_TUNNEL_ID=$(grep '^tunnel:' "$CF_CONFIG" | awk '{print $2}')
+  CF_TUNNEL_NAME=$(cloudflared tunnel list --output json 2>/dev/null | jq -r ".[] | select(.id==\"$EXISTING_TUNNEL_ID\") | .name")
+  SERVICE_PORT=$(grep 'service:' "$CF_CONFIG" | head -1 | grep -oP 'localhost:\K[0-9]+')
+
+  echo "[*] Current tunnel: $CF_TUNNEL_NAME"
+  echo "[*] Current hostname: $CF_HOSTNAME"
+  echo "[*] Service port: $SERVICE_PORT"
+  echo ""
+
+  read -p "Enter new hostname (leave empty to keep '$CF_HOSTNAME'): " NEW_HOSTNAME
+  if [[ -z "$NEW_HOSTNAME" ]]; then
+    echo "[*] No changes."
+    exit 0
+  fi
+
+  CF_HOSTNAME="$NEW_HOSTNAME"
+  validate_hostname "$CF_HOSTNAME"
+
+  echo "[*] Updating config: $CF_HOSTNAME..."
+  TUNNEL_ID="$EXISTING_TUNNEL_ID"
+  CRED_FILE="$CF_CONFIG_DIR/${TUNNEL_ID}.json"
+
+  # Write updated config
+  sudo tee "$CF_CONFIG" > /dev/null <<EOF
+tunnel: $TUNNEL_ID
+credentials-file: $CRED_FILE
+ingress:
+  - hostname: $CF_HOSTNAME
+    service: http://localhost:$SERVICE_PORT
+  - service: http_status:404
+EOF
+
+  # Update DNS route
+  echo "[*] Adding DNS route: $CF_HOSTNAME -> $CF_TUNNEL_NAME..."
+  cloudflared tunnel route dns "$CF_TUNNEL_NAME" "$CF_HOSTNAME" || true
+
+  # Restart service
+  echo "[*] Restarting cloudflared..."
+  sudo systemctl restart cloudflared
+
+  sleep 2
+  if systemctl is-active --quiet cloudflared; then
+    echo "[*] Cloudflare Tunnel is running"
+  else
+    echo "[!] Cloudflare Tunnel failed to start — check: journalctl -u cloudflared"
+    exit 1
+  fi
+
+  echo ""
+  echo "[*] Reconfiguration complete: https://$CF_HOSTNAME"
+  echo ""
+  echo "    NOTE: Delete the old DNS record in the Cloudflare dashboard"
+  echo "    if it's no longer needed."
+  exit 0
+fi
+
+SERVICE_PORT="${1:?Usage: $0 <local-service-port>  or  $0 --reconfigure}"
 
 echo ""
 read -p "Do you want to setup Cloudflare Tunnel? (y/N): " cf_ans
@@ -24,6 +121,7 @@ if [[ -f "$CF_CONFIG" ]]; then
 else
   read -p "Enter Tunnel name (e.g. llm-server): " CF_TUNNEL_NAME
   read -p "Enter hostname for Tunnel (e.g. llm.example.com): " CF_HOSTNAME
+  validate_hostname "$CF_HOSTNAME"
 fi
 
 # Install cloudflared if missing
