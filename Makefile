@@ -27,6 +27,9 @@ help:
 	@echo "  make test-models   Run model selection tests"
 	@echo "  make benchmark     Run load tests (k6)"
 	@echo ""
+	@echo "Tunnel:"
+	@echo "  make tunnel-reconfigure                         Change Cloudflare Tunnel hostname"
+	@echo ""
 	@echo "Models:"
 	@echo "  make list-models                                List remote models"
 	@echo "  make add-model REPO=org/repo MODEL=file.gguf   Download model"
@@ -96,3 +99,7 @@ switch-model:
 .PHONY: test-models
 test-models:
 	@./tests/test-model-selection.sh
+
+.PHONY: tunnel-reconfigure
+tunnel-reconfigure:
+	@sudo ./scripts/setup-cloudflare.sh --reconfigure

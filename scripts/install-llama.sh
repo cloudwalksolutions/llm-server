@@ -140,7 +140,7 @@ phase4_model_download() {
     # Install hf CLI via official installer — puts binary in /usr/local/bin
     if ! command -v hf &> /dev/null; then
         log_info "Installing Hugging Face CLI..."
-        curl -fsSL https://huggingface.co/cli/install.sh | HF_CLI_BIN_DIR=/usr/local/bin sh
+        curl -fsSL https://huggingface.co/cli/install.sh | HF_CLI_BIN_DIR=/usr/local/bin bash
     else
         log_info "Hugging Face CLI already installed"
     fi

@@ -3,14 +3,14 @@
 
 # Remote server connection (password set in .env file)
 remote:
-  host: 192.168.1.168
-  user: walkerobrien
+  host: 192.168.1.164
+  user: walker
 
 # llama-server performance parameters
 llama:
   # Concurrency: number of parallel request slots
   # Higher = more concurrent requests, more memory usage
-  # Recommended: 6-12 for 16-core CPU
+  # Recommended: 6-12 for 16-core CPU, 4-8 for 8-core CPU
   parallel_slots: 8
 
   # Batching: controls batch processing sizes
@@ -20,11 +20,11 @@ llama:
   ubatch_size: 512
 
   # Threading: allocate CPU threads for different tasks
-  # Total threads available: 32 (16 cores × 2 threads)
-  # Leave ~25% for system overhead
-  threads_gen: 12      # Generation (primary inference)
+  # Total threads available: 16 (8 cores × 2 threads)
+  # gen/batch don't run simultaneously so they can both be high
+  threads_gen: 10      # Generation (primary inference)
   threads_batch: 8     # Batch/prompt processing
-  threads_http: 6      # HTTP request handling
+  threads_http: 4      # HTTP request handling
 
   # Caching: prompt cache reuse threshold
   # Lower = more aggressive caching (better for similar prompts)
@@ -32,9 +32,9 @@ llama:
   cache_reuse: 256
 
   # Context window size in tokens
-  # Options: 32768, 65536, 131072
-  # Higher = more memory usage (~4GB KV per slot at 65536 with f16)
-  context_size: 65536
+  # Options: 8192, 16384, 32768
+  # Higher = more memory usage, longer prompts supported
+  context_size: 32768
 
 # System resource limits (usually don't need to change)
 resources:

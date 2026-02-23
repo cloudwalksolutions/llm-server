@@ -1,7 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 
-const ENDPOINT = __ENV.LLM_HOST ? `https://${__ENV.LLM_HOST}` : 'http://localhost:8080';
+const ENDPOINT = __ENV.LLM_ENDPOINT || (__ENV.LLM_HOST ? `https://${__ENV.LLM_HOST}` : 'http://localhost:8080');
 const API_KEY = __ENV.LLAMA_API_KEY || '';
 
 export const options = {
