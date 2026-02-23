@@ -97,18 +97,51 @@ fi
 echo ""
 echo -e "${BLUE}Streaming test${NC}..."
 echo ""
+_stream_py=$(mktemp)
+cat > "$_stream_py" <<'PYEOF'
+import sys, json, time
+
+first_token_time = None
+last_token_time = None
+token_count = 0
+
+for line in sys.stdin:
+    line = line.rstrip('\n')
+    if not line.startswith('data: '):
+        continue
+    payload = line[6:]
+    if payload == '[DONE]':
+        break
+    try:
+        obj = json.loads(payload)
+        delta = obj.get('choices', [{}])[0].get('delta', {})
+        text = delta.get('content') or delta.get('reasoning_content') or ''
+        if text:
+            now = time.monotonic()
+            if first_token_time is None:
+                first_token_time = now
+            last_token_time = now
+            token_count += 1
+            print(text, end='', flush=True)
+    except (json.JSONDecodeError, KeyError, IndexError):
+        pass
+
+print()
+print()
+if token_count > 0 and first_token_time is not None and last_token_time is not None:
+    elapsed = last_token_time - first_token_time
+    tps = token_count / elapsed if elapsed > 0 else float('inf')
+    print(f'\033[0;34m\u25b8 {token_count} tok \u00b7 {elapsed:.1f}s \u00b7 {tps:.1f} tok/s\033[0m')
+PYEOF
 curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
     -H "Content-Type: application/json" \
     ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
     -d '{
         "messages": [{"role": "user", "content": "Explain in detail why Michael Jordan is greater than LeBron James."}],
-        "max_tokens": 50,
+        "max_tokens": 150,
         "temperature": 0.7,
         "stream": true
     }' 2>/dev/null \
-    | sed -u 's/^data: //' \
-    | { grep -v '^\[DONE\]' || true; } \
-    | jq --unbuffered -j '.choices[0].delta | if .content and .content != "" then .content elif .reasoning_content then .reasoning_content else empty end' 2>/dev/null || true
-echo ""
-echo ""
+    | python3 -u "$_stream_py"
+rm -f "$_stream_py"
 echo -e "${GREEN}PASS${NC}: Remote test complete"

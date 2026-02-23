@@ -16,9 +16,10 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 1,
       stages: [
-        { duration: '30s', target: 4 },
-        { duration: '1m', target: 8 },
-        { duration: '30s', target: 4 },
+        { duration: '30s', target: 8 },
+        { duration: '1m', target: 16 },
+        { duration: '3m', target: 16 },
+        { duration: '30s', target: 8 },
         { duration: '10s', target: 1 },
       ],
       startTime: '10s',
@@ -44,7 +45,7 @@ export default function () {
     messages: [
       { role: 'user', content: 'Count to 10 quickly.' }
     ],
-    max_tokens: 50,
+    max_tokens: 100,
     temperature: 0.7,
   });
 

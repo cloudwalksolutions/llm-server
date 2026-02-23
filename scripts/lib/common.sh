@@ -30,6 +30,11 @@ load_config() {
     THREADS_HTTP=$(yq '.llama.threads_http' "$config_file")
     CACHE_REUSE=$(yq '.llama.cache_reuse' "$config_file")
     CONTEXT_SIZE=$(yq '.llama.context_size' "$config_file")
+    CACHE_TYPE_K=$(yq '.llama.cache_type_k' "$config_file")
+    CACHE_TYPE_V=$(yq '.llama.cache_type_v' "$config_file")
+    FLASH_ATTN=$(yq '.llama.flash_attn' "$config_file")
+    DRAFT_MODEL=$(yq '.llama.draft_model' "$config_file")
+    DRAFT_MAX=$(yq '.llama.draft_max' "$config_file")
 
     # Load SSH auth from .env
     if [[ -f .env ]]; then
@@ -51,7 +56,8 @@ load_config() {
     export REMOTE_HOST REMOTE_USER SSH_AUTH SSH_KEY SSH_PASS
     export PARALLEL_SLOTS BATCH_SIZE UBATCH_SIZE
     export THREADS_GEN THREADS_BATCH THREADS_HTTP
-    export CACHE_REUSE CONTEXT_SIZE
+    export CACHE_REUSE CONTEXT_SIZE CACHE_TYPE_K CACHE_TYPE_V
+    export FLASH_ATTN DRAFT_MODEL DRAFT_MAX
 }
 
 # Build SSH command based on auth method
@@ -89,4 +95,9 @@ print_config() {
     echo -e "${YELLOW}Threading:${NC} $THREADS_GEN gen / $THREADS_BATCH batch / $THREADS_HTTP HTTP"
     echo -e "${YELLOW}Caching:${NC} $CACHE_REUSE token threshold"
     echo -e "${YELLOW}Context:${NC} $CONTEXT_SIZE tokens"
+    echo -e "${YELLOW}KV cache:${NC} k=$CACHE_TYPE_K v=$CACHE_TYPE_V"
+    echo -e "${YELLOW}Flash attn:${NC} $FLASH_ATTN"
+    local draft_info="${DRAFT_MODEL:-none}"
+    [[ "$draft_info" == '""' || "$draft_info" == "null" ]] && draft_info="none"
+    echo -e "${YELLOW}Draft model:${NC} $draft_info (max $DRAFT_MAX tokens)"
 }
