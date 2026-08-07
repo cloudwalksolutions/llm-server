@@ -1,0 +1,21 @@
+# Fixture for golden render tests. Fixed values — do not tune.
+remote:
+  host: 10.0.0.9
+  user: testuser
+
+runtime:
+  engine: podman
+  gpu: amd
+
+llama:
+  context_per_request: 16384
+  parallel_slots: 4
+  kv_unified: false
+  batch_size: 2048
+  ubatch_size: 512
+  threads_gen: 12
+  threads_batch: 8
+  threads_http: 6
+  cache_reuse: 256
+  cache_type_k: f16
+  cache_type_v: f16

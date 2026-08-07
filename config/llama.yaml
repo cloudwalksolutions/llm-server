@@ -1,48 +1,41 @@
 # llama-server Configuration
-# Copy this file to config/llama.yaml and customize for your setup
+# Active deploy target. Not in git — see config/llama.example.yaml for docs.
 
-# Remote server connection (password set in .env file)
 remote:
-  host: 192.168.1.164
-  user: walker
+  host: 192.168.1.168
+  user: walkerobrien
 
-# llama-server performance parameters
+runtime:
+  engine: podman
+  gpu: amd
+
 llama:
-  # Concurrency: number of parallel request slots
-  # Higher = more concurrent requests, more memory usage
-  # Recommended: 6-12 for 16-core CPU, 4-8 for 8-core CPU
-  parallel_slots: 8
+  # 16384 per request, up from an effective 2816. See CONTEXT_SIZE_ISSUE.md.
+  # Derives -c 65536 -np 4 --no-kv-unified.
+  # Same total KV as the previous 65536/8 config, redistributed into fewer,
+  # larger windows.
+  context_per_request: 16384
+  parallel_slots: 4
+  kv_unified: false
 
-  # Batching: controls batch processing sizes
-  # batch_size: logical batch (pipeline parallelization)
-  # ubatch_size: physical batch (GPU batch, 4:1 ratio recommended)
   batch_size: 2048
   ubatch_size: 512
 
-  # Threading: allocate CPU threads for different tasks
-  # Total threads available: 16 (8 cores × 2 threads)
-  # gen/batch don't run simultaneously so they can both be high
-  threads_gen: 10      # Generation (primary inference)
-  threads_batch: 8     # Batch/prompt processing
-  threads_http: 4      # HTTP request handling
+  # 16 cores / 32 threads (Ryzen AI Max+ 395)
+  threads_gen: 12
+  threads_batch: 8
+  threads_http: 6
 
-  # Caching: prompt cache reuse threshold
-  # Lower = more aggressive caching (better for similar prompts)
-  # Higher = less caching (better for diverse prompts)
   cache_reuse: 256
 
-  # Context window size in tokens
-  # Options: 8192, 16384, 32768
-  # Higher = more memory usage, longer prompts supported
-  context_size: 32768
+  cache_type_k: f16
+  cache_type_v: f16
 
-# System resource limits (usually don't need to change)
 resources:
   limit_nofile: 65535
   limit_memlock: infinity
 
-# Benchmarking configuration
 benchmark:
-  concurrent_requests: 8    # Match parallel_slots for testing
+  concurrent_requests: 4
   max_tokens: 100
   timeout: 120

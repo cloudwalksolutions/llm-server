@@ -1,136 +1,164 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Deploy config/llama.yaml to the target llama-server.
+#
+# Usage:
+#   ./scripts/deploy-llama.sh                 apply
+#   ./scripts/deploy-llama.sh --dry-run       show what would change
+#   ./scripts/deploy-llama.sh --render-conf   print /etc/llama-server.conf to stdout
+#   ./scripts/deploy-llama.sh --render-unit   print the systemd unit to stdout
+#
+# The --render-* modes are offline when the base values are supplied as env
+# vars (BASE_LLAMA_PORT, BASE_MODEL_FILE, BASE_CONTAINER_IMAGE, BASE_LLAMA_API_KEY),
+# which is how the golden tests run them without a server.
+#
+# -E is required or the ERR trap won't fire inside functions.
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
-DRY_RUN=false
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+MODE="apply"
+case "${1:-}" in
+    --dry-run)     MODE="dry-run" ;;
+    --render-conf) MODE="render-conf" ;;
+    --render-unit) MODE="render-unit" ;;
+    "")            MODE="apply" ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+esac
 
-$DRY_RUN && echo -e "${YELLOW}DRY RUN MODE${NC}\n"
-
-# Load configuration
-load_config || exit 1
+load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
 
 TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+CONF_PATH="/etc/llama-server.conf"
+UNIT_PATH="/etc/systemd/system/llama-server.service"
 
-echo -e "${CYAN}[1/8]${NC} Config loaded: $PARALLEL_SLOTS slots, $BATCH_SIZE/$UBATCH_SIZE batch, $THREADS_GEN/$THREADS_BATCH/$THREADS_HTTP threads"
-echo -e "${CYAN}[2/8]${NC} Connecting to ${REMOTE_USER}@${REMOTE_HOST}..."
+# ── Base values ───────────────────────────────────────────────────────────────
+# Preserved from the target so `make switch-model` isn't clobbered by a deploy.
+load_base_values() {
+    if [[ -n "${BASE_LLAMA_PORT:-}" ]]; then
+        LLAMA_PORT="$BASE_LLAMA_PORT"
+        LLAMA_HOST="${BASE_LLAMA_HOST:-0.0.0.0}"
+        MODEL_FILE="$BASE_MODEL_FILE"
+        CONTAINER_IMAGE="$BASE_CONTAINER_IMAGE"
+        LLAMA_API_KEY="${BASE_LLAMA_API_KEY:-}"
+        return
+    fi
+    LLAMA_PORT=$(remote_conf_value LLAMA_PORT 8080)
+    LLAMA_HOST=$(remote_conf_value LLAMA_HOST 0.0.0.0)
+    MODEL_FILE=$(remote_conf_value MODEL_FILE)
+    CONTAINER_IMAGE=$(remote_conf_value CONTAINER_IMAGE)
+    LLAMA_API_KEY=$(remote_conf_value LLAMA_API_KEY)
 
-test_ssh || { echo -e "${RED}Connection failed${NC}"; exit 1; }
+    # Blank values here previously produced `-m /models/` and, worse, an empty
+    # LLAMA_API_KEY, which disables auth entirely.
+    local missing=()
+    [[ -z "$MODEL_FILE" ]] && missing+=("MODEL_FILE")
+    [[ -z "$CONTAINER_IMAGE" ]] && missing+=("CONTAINER_IMAGE")
+    [[ -z "$LLAMA_API_KEY" ]] && missing+=("LLAMA_API_KEY")
+    if ((${#missing[@]} > 0)); then
+        echo -e "${RED}Cannot read from $CONF_PATH on the target: ${missing[*]}${NC}" >&2
+        echo "Refusing to deploy a config with blank values." >&2
+        echo "Run the install script on the target first, or set BASE_* overrides." >&2
+        exit 1
+    fi
+}
 
-if $DRY_RUN; then
-    echo -e "${CYAN}[3/8]${NC} ${YELLOW}Would backup:${NC} /etc/llama-server.conf.backup.$TIMESTAMP"
-    echo -e "${CYAN}[4/8]${NC} ${YELLOW}Would add to /etc/llama-server.conf:${NC}"
-    echo "  PARALLEL_SLOTS=$PARALLEL_SLOTS BATCH_SIZE=$BATCH_SIZE UBATCH_SIZE=$UBATCH_SIZE"
-    echo "  THREADS_GEN=$THREADS_GEN THREADS_BATCH=$THREADS_BATCH THREADS_HTTP=$THREADS_HTTP CACHE_REUSE=$CACHE_REUSE"
-    echo -e "${CYAN}[5/8]${NC} ${YELLOW}Would update systemd service with llama-server flags${NC}"
-    echo -e "${CYAN}[6/8]${NC} ${YELLOW}Would reload systemd${NC}"
-    echo -e "${CYAN}[7/8]${NC} ${YELLOW}Would restart llama-server${NC}"
-    echo -e "${CYAN}[8/8]${NC} ${YELLOW}Would verify health${NC}"
-    echo -e "\n${YELLOW}DRY RUN COMPLETE - Run 'make deploy' to apply${NC}"
-    exit 0
-fi
-
-echo -e "${CYAN}[3/8]${NC} Creating backups..."
-remote_exec_sudo "cp /etc/llama-server.conf /etc/llama-server.conf.backup.$TIMESTAMP 2>/dev/null || true"
-remote_exec_sudo "cp /etc/systemd/system/llama-server.service /etc/systemd/system/llama-server.service.backup.$TIMESTAMP 2>/dev/null || true"
-
-echo -e "${CYAN}[4/8]${NC} Updating /etc/llama-server.conf..."
-
-# Get current base settings from remote
-REMOTE_LLAMA_PORT=$(remote_exec "grep '^LLAMA_PORT=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "8080")
-REMOTE_LLAMA_HOST=$(remote_exec "grep '^LLAMA_HOST=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "0.0.0.0")
-REMOTE_MODEL_FILE=$(remote_exec "grep '^MODEL_FILE=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "Qwen3-8B-Q4_K_M.gguf")
-REMOTE_CONTAINER_IMAGE=$(remote_exec "grep '^CONTAINER_IMAGE=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv")
-REMOTE_LLAMA_API_KEY=$(remote_exec "grep '^LLAMA_API_KEY=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "")
-
-# Create complete config file locally
-cat > /tmp/llama-server.conf <<EOF
+# ── Renderers ─────────────────────────────────────────────────────────────────
+render_conf() {
+    cat <<EOF
 # LLaMA Server Configuration
-# Edit and restart: sudo systemctl restart llama-server
-# Deployed: $(date +"%Y-%m-%d %H:%M:%S")
+# Generated by deploy-llama.sh — edit config/llama.yaml, not this file.
+# Restart: sudo systemctl restart llama-server
 
-# Base configuration
-LLAMA_PORT=$REMOTE_LLAMA_PORT
-LLAMA_HOST=$REMOTE_LLAMA_HOST
-CONTEXT_SIZE=$CONTEXT_SIZE
-MODEL_FILE=$REMOTE_MODEL_FILE
-CONTAINER_IMAGE=$REMOTE_CONTAINER_IMAGE
+LLAMA_PORT=$LLAMA_PORT
+LLAMA_HOST=$LLAMA_HOST
+MODEL_FILE=$MODEL_FILE
+CONTAINER_IMAGE=$CONTAINER_IMAGE
+LLAMA_API_KEY=$LLAMA_API_KEY
 
-# API key for bearer-token auth
-LLAMA_API_KEY=$REMOTE_LLAMA_API_KEY
-
-# Optimization parameters
+# Context. CONTEXT_SIZE is llama.cpp's -c, a TOTAL across slots.
+# CONTEXT_PER_REQUEST is what one request actually gets.
+CONTEXT_PER_REQUEST=$CONTEXT_PER_REQUEST
+CONTEXT_SIZE=$TOTAL_CONTEXT
 PARALLEL_SLOTS=$PARALLEL_SLOTS
+KV_UNIFIED=$KV_UNIFIED
+
 BATCH_SIZE=$BATCH_SIZE
 UBATCH_SIZE=$UBATCH_SIZE
 THREADS_GEN=$THREADS_GEN
 THREADS_BATCH=$THREADS_BATCH
 THREADS_HTTP=$THREADS_HTTP
 CACHE_REUSE=$CACHE_REUSE
+CACHE_TYPE_K=$CACHE_TYPE_K
+CACHE_TYPE_V=$CACHE_TYPE_V
 EOF
+}
 
-# Copy to remote
-if [[ "$SSH_AUTH" == "password" ]]; then
-    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no /tmp/llama-server.conf "$REMOTE_USER@$REMOTE_HOST:/tmp/"
-else
-    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no /tmp/llama-server.conf "$REMOTE_USER@$REMOTE_HOST:/tmp/"
-fi
+# No trailing newline: $(...) strips it, so the templates supply it.
+_gpu_flags() {
+    if [[ "$RUNTIME_GPU" == "amd" ]]; then
+        printf '    --device /dev/kfd \\\n    --device /dev/dri \\\n    --group-add video \\\n    --security-opt seccomp=unconfined \\'
+    else
+        printf '    --gpus all \\'
+    fi
+}
 
-# Replace config file
-remote_exec_sudo "mv /tmp/llama-server.conf /etc/llama-server.conf"
-remote_exec_sudo "chmod 644 /etc/llama-server.conf"
+_unit_deps() {
+    if [[ "$RUNTIME_ENGINE" == "docker" ]]; then
+        printf 'After=network.target docker.service\nRequires=docker.service'
+    else
+        printf 'After=network.target'
+    fi
+}
 
-echo -e "${CYAN}[5/8]${NC} Updating systemd service..."
-remote_exec_sudo "systemctl unmask llama-server 2>/dev/null || true"
+_kv_unified_flag() {
+    [[ "$KV_UNIFIED" == "true" ]] && printf -- '--kv-unified' || printf -- '--no-kv-unified'
+}
 
-# Create temporary service file locally
-cat > /tmp/llama-server.service <<'EOF'
+render_unit() {
+    local engine_bin="/usr/bin/$RUNTIME_ENGINE"
+    cat <<EOF
 [Unit]
 Description=LLaMA.cpp Inference Server
-After=network.target
+$(_unit_deps)
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/llama-server.conf
+EnvironmentFile=$CONF_PATH
 
-ExecStartPre=-/usr/bin/podman rm -f llama-server-container
-ExecStart=/usr/bin/podman run \
-    --name llama-server-container \
-    --rm \
-    --device /dev/kfd \
-    --device /dev/dri \
-    --group-add video \
-    --security-opt seccomp=unconfined \
-    -v /opt/llm/models:/models:ro \
-    -p ${LLAMA_PORT}:${LLAMA_PORT} \
-    -e LLAMA_API_KEY=${LLAMA_API_KEY} \
-    ${CONTAINER_IMAGE} \
-    llama-server \
-        --no-mmap \
-        -ngl 999 \
-        -fa on \
-        -c ${CONTEXT_SIZE} \
-        -np ${PARALLEL_SLOTS} \
-        -b ${BATCH_SIZE} \
-        -ub ${UBATCH_SIZE} \
-        --cont-batching \
-        --cache-prompt \
-        --cache-reuse ${CACHE_REUSE} \
-        -t ${THREADS_GEN} \
-        -tb ${THREADS_BATCH} \
-        --threads-http ${THREADS_HTTP} \
-        --cache-type-k f16 \
-        --cache-type-v f16 \
-        --models-dir /models \
-        -m /models/${MODEL_FILE} \
-        --host 0.0.0.0 \
-        --port ${LLAMA_PORT} \
+ExecStartPre=-$engine_bin rm -f llama-server-container
+ExecStart=$engine_bin run \\
+    --name llama-server-container \\
+    --rm \\
+$(_gpu_flags)
+    -v /opt/llm/models:/models:ro \\
+    -p \${LLAMA_PORT}:\${LLAMA_PORT} \\
+    -e LLAMA_API_KEY=\${LLAMA_API_KEY} \\
+    \${CONTAINER_IMAGE} \\
+        --no-mmap \\
+        -ngl 999 \\
+        -fa on \\
+        -c \${CONTEXT_SIZE} \\
+        -np \${PARALLEL_SLOTS} \\
+        $(_kv_unified_flag) \\
+        -b \${BATCH_SIZE} \\
+        -ub \${UBATCH_SIZE} \\
+        --cont-batching \\
+        --cache-prompt \\
+        --cache-reuse \${CACHE_REUSE} \\
+        -t \${THREADS_GEN} \\
+        -tb \${THREADS_BATCH} \\
+        --threads-http \${THREADS_HTTP} \\
+        --cache-type-k \${CACHE_TYPE_K} \\
+        --cache-type-v \${CACHE_TYPE_V} \\
+        -m /models/\${MODEL_FILE} \\
+        --host \${LLAMA_HOST} \\
+        --port \${LLAMA_PORT} \\
         --metrics
 
-ExecStop=/usr/bin/podman stop llama-server-container
+ExecStop=$engine_bin stop llama-server-container
 
 Restart=always
 RestartSec=10
@@ -146,35 +174,184 @@ SyslogIdentifier=llama-server
 [Install]
 WantedBy=multi-user.target
 EOF
+}
 
-# Copy to remote using SCP
-if [[ "$SSH_AUTH" == "password" ]]; then
-    sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no /tmp/llama-server.service "$REMOTE_USER@$REMOTE_HOST:/tmp/"
-else
-    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no /tmp/llama-server.service "$REMOTE_USER@$REMOTE_HOST:/tmp/"
+# ── Render-only modes exit before touching anything ───────────────────────────
+case "$MODE" in
+    render-conf) load_base_values; render_conf; exit 0 ;;
+    render-unit) load_base_values; render_unit; exit 0 ;;
+    *) ;;
+esac
+
+# ── Preflight ─────────────────────────────────────────────────────────────────
+preflight() {
+    echo -e "${CYAN}[1/9]${NC} Config:"
+    print_config
+
+    echo -e "${CYAN}[2/9]${NC} Connecting to ${REMOTE_USER}@${REMOTE_HOST}..."
+    test_ssh || { echo -e "${RED}Connection failed${NC}" >&2; exit 1; }
+
+    load_base_values
+
+    echo -e "${CYAN}[3/9]${NC} Verifying target matches runtime.engine/runtime.gpu..."
+    if ! remote_exec "command -v $RUNTIME_ENGINE >/dev/null 2>&1"; then
+        echo -e "${RED}Target has no '$RUNTIME_ENGINE'.${NC}" >&2
+        echo "config/llama.yaml says runtime.engine: $RUNTIME_ENGINE" >&2
+        echo "Deploying this unit would create a service that cannot start." >&2
+        exit 1
+    fi
+    if [[ "$RUNTIME_GPU" == "amd" ]]; then
+        remote_exec "test -e /dev/kfd" || {
+            echo -e "${RED}Target has no /dev/kfd — not an AMD ROCm host.${NC}" >&2
+            echo "config/llama.yaml says runtime.gpu: amd" >&2
+            exit 1
+        }
+    else
+        remote_exec "command -v nvidia-smi >/dev/null 2>&1" || {
+            echo -e "${RED}Target has no nvidia-smi — not an NVIDIA host.${NC}" >&2
+            echo "config/llama.yaml says runtime.gpu: nvidia" >&2
+            exit 1
+        }
+    fi
+
+    remote_exec "test -f /opt/llm/models/$MODEL_FILE" || {
+        echo -e "${RED}Model not found on target: /opt/llm/models/$MODEL_FILE${NC}" >&2
+        exit 1
+    }
+
+    # Syntax check only. "not executable" is expected when deploying from a
+    # machine that isn't the target; the binary is checked on the target above.
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        local tmp_unit
+        tmp_unit=$(mktemp -d)/llama-server.service
+        render_unit > "$tmp_unit"
+        local problems
+        problems=$(systemd-analyze verify "$tmp_unit" 2>&1 | grep -v 'is not executable' | grep -v '^$' || true)
+        rm -rf "$(dirname "$tmp_unit")"
+        if [[ -n "$problems" ]]; then
+            echo -e "${RED}Rendered unit is invalid:${NC}" >&2
+            echo "$problems" >&2
+            exit 1
+        fi
+    fi
+}
+
+# ── Dry run ───────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "dry-run" ]]; then
+    echo -e "${YELLOW}DRY RUN — nothing will be changed${NC}\n"
+    print_config
+    echo -e "\n${CYAN}Effective per-request context:${NC} ${GREEN}$CONTEXT_PER_REQUEST${NC} tokens"
+    echo -e "${CYAN}llama.cpp will be started with:${NC} -c $TOTAL_CONTEXT -np $PARALLEL_SLOTS $(_kv_unified_flag)"
+
+    if test_ssh 2>/dev/null; then
+        load_base_values
+        echo -e "\n${CYAN}--- $CONF_PATH (diff vs target) ---${NC}"
+        if ! diff -u <(remote_exec "cat $CONF_PATH 2>/dev/null" || true) <(render_conf) ; then
+            :
+        else
+            echo "(no changes)"
+        fi
+        echo -e "\n${CYAN}--- $UNIT_PATH (diff vs target) ---${NC}"
+        if ! diff -u <(remote_exec "cat $UNIT_PATH 2>/dev/null" || true) <(render_unit) ; then
+            :
+        else
+            echo "(no changes)"
+        fi
+    else
+        echo -e "\n${YELLOW}Target unreachable — showing rendered output instead of a diff.${NC}"
+        echo -e "\n${CYAN}--- $CONF_PATH ---${NC}"
+        BASE_LLAMA_PORT=8080 BASE_MODEL_FILE='<from target>' \
+            BASE_CONTAINER_IMAGE='<from target>' BASE_LLAMA_API_KEY='<from target>' \
+            load_base_values
+        render_conf
+        echo -e "\n${CYAN}--- $UNIT_PATH ---${NC}"
+        render_unit
+    fi
+    echo -e "\n${YELLOW}Run 'make deploy' to apply${NC}"
+    exit 0
 fi
 
-# Move to systemd directory with sudo
-remote_exec_sudo "mv /tmp/llama-server.service /etc/systemd/system/llama-server.service"
-remote_exec_sudo "chmod 644 /etc/systemd/system/llama-server.service"
+# ── Apply ─────────────────────────────────────────────────────────────────────
+preflight
 
-echo -e "${CYAN}[6/8]${NC} Reloading systemd..."
+ROLLBACK=()
+rb() { ROLLBACK+=("$*"); }
+
+run_rollback() {
+    echo -e "\n${RED}Deploy failed — rolling back${NC}" >&2
+    local i
+    for ((i = ${#ROLLBACK[@]} - 1; i >= 0; i--)); do
+        echo "  undo: ${ROLLBACK[i]}" >&2
+        remote_exec_sudo "${ROLLBACK[i]}" || echo -e "  ${RED}rollback step failed${NC}" >&2
+    done
+    remote_exec_sudo "systemctl daemon-reload && systemctl restart llama-server" || true
+    if health_check 120 quiet; then
+        echo -e "${YELLOW}Rolled back; service is healthy on the previous config.${NC}" >&2
+    else
+        echo -e "${RED}ROLLED BACK BUT STILL UNHEALTHY — check 'make logs'${NC}" >&2
+    fi
+    exit 1
+}
+
+# /health returning 200 proves only that an HTTP server is up. Restart=always
+# means a crash-looping unit can still answer from a stale container.
+health_check() {
+    local timeout="${1:-300}" quiet="${2:-}" start now code n0 ncur
+    start=$(date +%s)
+    n0=$(remote_exec "systemctl show -p NRestarts --value llama-server" 2>/dev/null || echo 0)
+
+    while :; do
+        now=$(date +%s)
+        ((now - start >= timeout)) && { echo "health check timed out after ${timeout}s" >&2; return 1; }
+
+        ncur=$(remote_exec "systemctl show -p NRestarts --value llama-server" 2>/dev/null || echo "$n0")
+        if [[ "$ncur" =~ ^[0-9]+$ && "$n0" =~ ^[0-9]+$ ]] && ((ncur > n0)); then
+            echo "service restarted $((ncur - n0))x during health check — crash loop" >&2
+            return 1
+        fi
+
+        code=$(remote_exec "curl -s -o /dev/null -w '%{http_code}' http://localhost:$LLAMA_PORT/health" 2>/dev/null || echo 000)
+        if [[ "$code" == "200" ]]; then
+            # Prove the model actually answers, not just the HTTP layer
+            if remote_exec "curl -sf -m 60 -H 'Authorization: Bearer $LLAMA_API_KEY' -H 'Content-Type: application/json' -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK\"}],\"max_tokens\":5}' http://localhost:$LLAMA_PORT/v1/chat/completions" \
+                | jq -e '.choices[0].message' >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+        [[ -z "$quiet" ]] && printf '.'
+        sleep 3
+    done
+}
+
+trap run_rollback ERR
+
+echo -e "${CYAN}[4/9]${NC} Backing up current config..."
+remote_exec_sudo "cp $CONF_PATH $CONF_PATH.backup.$TIMESTAMP 2>/dev/null || true"
+rb "cp $CONF_PATH.backup.$TIMESTAMP $CONF_PATH 2>/dev/null || true"
+remote_exec_sudo "cp $UNIT_PATH $UNIT_PATH.backup.$TIMESTAMP 2>/dev/null || true"
+rb "cp $UNIT_PATH.backup.$TIMESTAMP $UNIT_PATH 2>/dev/null || true"
+
+echo -e "${CYAN}[5/9]${NC} Writing $CONF_PATH..."
+render_conf | remote_exec_sudo "cat > $CONF_PATH && chmod 644 $CONF_PATH"
+
+echo -e "${CYAN}[6/9]${NC} Writing $UNIT_PATH..."
+remote_exec_sudo "systemctl unmask llama-server 2>/dev/null || true"
+render_unit | remote_exec_sudo "cat > $UNIT_PATH && chmod 644 $UNIT_PATH"
+
+echo -e "${CYAN}[7/9]${NC} Reloading systemd..."
 remote_exec_sudo "systemctl daemon-reload"
 remote_exec_sudo "systemctl enable llama-server"
 
-echo -e "${CYAN}[7/8]${NC} Restarting llama-server..."
+echo -e "${CYAN}[8/9]${NC} Restarting llama-server..."
 remote_exec_sudo "systemctl restart llama-server"
 
-echo -e "${CYAN}[8/8]${NC} Waiting for health check..."
-for i in {1..60}; do
-    if remote_exec "curl -sf http://localhost:8080/health > /dev/null 2>&1"; then
-        echo -e "${GREEN}✓ Deployment complete!${NC}\n"
-        echo -e "${GREEN}Applied: ${PARALLEL_SLOTS} slots, ${BATCH_SIZE}/${UBATCH_SIZE} batch, ${THREADS_GEN}/${THREADS_BATCH}/${THREADS_HTTP} threads${NC}"
-        echo -e "\nNext: ${BLUE}make status${NC} | ${BLUE}make benchmark${NC} | ${BLUE}make logs${NC}"
-        exit 0
-    fi
-    sleep 1
-done
+echo -e "${CYAN}[9/9]${NC} Health check (model load can take a few minutes)..."
+health_check 300
+echo ""
 
-echo -e "${RED}Health check timeout. Check logs: make logs${NC}"
-exit 1
+trap - ERR
+
+echo -e "${GREEN}✓ Deployed${NC}"
+echo -e "  ${GREEN}$CONTEXT_PER_REQUEST${NC} tokens per request × $PARALLEL_SLOTS slots (-c $TOTAL_CONTEXT)"
+echo ""
+echo -e "Next: ${BLUE}make verify${NC} | ${BLUE}make test-context${NC} | ${BLUE}make benchmark${NC}"

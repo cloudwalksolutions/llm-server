@@ -1,40 +1,53 @@
 # llama-server Configuration
 # Copy this file to config/llama.yaml and customize for your setup
 
-# Remote server connection (password set in .env file)
+# Remote server connection (password/key set in .env file)
 remote:
   host: 192.168.1.168
   user: walkerobrien
 
+# Container runtime and GPU vendor of the TARGET machine.
+# Deploy refuses to run if these don't match what's actually installed there —
+# an AMD/podman unit on an NVIDIA/docker host produces a service that cannot start.
+runtime:
+  engine: podman       # podman | docker
+  gpu: amd             # amd | nvidia
+
 # llama-server performance parameters
 llama:
-  # Concurrency: number of parallel request slots
-  # Higher = more concurrent requests, more memory usage
-  # Recommended: 6-12 for 16-core CPU
-  parallel_slots: 8
+  # Context window a SINGLE REQUEST gets. This is the number clients care about
+  # and the one that shows up as n_ctx in errors and /props.
+  #
+  # llama.cpp's -c flag is a TOTAL that gets divided across slots:
+  #   n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / parallel_slots)
+  # Deploy derives -c for you, so set the number you actually want.
+  context_per_request: 16384
 
-  # Batching: controls batch processing sizes
-  # batch_size: logical batch (pipeline parallelization)
-  # ubatch_size: physical batch (GPU batch, 4:1 ratio recommended)
+  # Concurrent request slots. With kv_unified: false each slot gets its own
+  # dedicated window, so total KV memory scales with slots × context_per_request.
+  parallel_slots: 4
+
+  # false = dedicated per-slot windows (predictable, more memory)
+  # true  = one shared pool any request may use (cheaper, slots contend)
+  kv_unified: false
+
+  # Batching: batch_size is logical, ubatch_size physical. ubatch <= batch.
   batch_size: 2048
   ubatch_size: 512
 
-  # Threading: allocate CPU threads for different tasks
-  # Total threads available: 32 (16 cores × 2 threads)
-  # Leave ~25% for system overhead
-  threads_gen: 12      # Generation (primary inference)
-  threads_batch: 8     # Batch/prompt processing
-  threads_http: 6      # HTTP request handling
+  # Threading. gen/batch don't run simultaneously so both can be high.
+  threads_gen: 12
+  threads_batch: 8
+  threads_http: 6
 
-  # Caching: prompt cache reuse threshold
-  # Lower = more aggressive caching (better for similar prompts)
-  # Higher = less caching (better for diverse prompts)
+  # Prompt cache reuse threshold. Lower = more aggressive caching.
   cache_reuse: 256
 
-  # Context window size in tokens
-  # Options: 8192, 16384, 32768
-  # Higher = more memory usage, longer prompts supported
-  context_size: 32768
+  # KV cache quantization. f16 is the safe default; q8_0 roughly halves KV
+  # memory for ~0.05% perplexity. The two MUST match — asymmetric types fall
+  # back to CPU attention silently and run 25-45x slower.
+  cache_type_k: f16
+  cache_type_v: f16
 
 # System resource limits (usually don't need to change)
 resources:
@@ -43,6 +56,6 @@ resources:
 
 # Benchmarking configuration
 benchmark:
-  concurrent_requests: 8    # Match parallel_slots for testing
+  concurrent_requests: 4    # Match parallel_slots for testing
   max_tokens: 100
   timeout: 120

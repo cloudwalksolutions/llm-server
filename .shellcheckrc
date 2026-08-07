@@ -1,0 +1,21 @@
+shell=bash
+
+# Scripts source scripts/lib/common.sh
+external-sources=true
+source-path=SCRIPTDIR
+source-path=scripts
+source-path=scripts/lib
+
+# SC2310/SC2312: set -e suppressed, and masked return values in $(...).
+# Both are off by default and both flag real bugs in the deploy path.
+enable=check-set-e-suppressed
+enable=check-extra-masked-returns
+enable=quote-safe-variables
+enable=deprecate-which
+enable=avoid-nullary-conditions
+enable=add-default-case
+
+# Only exist at runtime on the target
+disable=SC1091
+# Colours in lib/common.sh are used by the scripts that source it
+disable=SC2034
