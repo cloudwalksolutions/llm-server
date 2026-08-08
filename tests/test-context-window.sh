@@ -12,9 +12,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# Explicit env wins over .env
-_env_host="${LLM_HOST:-}"
-_env_key="${LLAMA_API_KEY:-}"
+# Explicit env wins over .env. Strip quotes in case a caller exported raw
+# .env lines rather than sourcing them.
+_unquote() { local v="$1"; v="${v#[\'\"]}"; v="${v%[\'\"]}"; printf '%s' "$v"; }
+_env_host=$(_unquote "${LLM_HOST:-}")
+_env_key=$(_unquote "${LLAMA_API_KEY:-}")
 source .env 2>/dev/null || true
 [[ -n "$_env_host" ]] && LLM_HOST="$_env_host"
 [[ -n "$_env_key" ]] && LLAMA_API_KEY="$_env_key"
@@ -31,13 +33,15 @@ if [[ -z "$HOST" ]]; then
     exit 1
 fi
 
-ENDPOINT="https://$HOST"
+# LLM_ENDPOINT lets us test the origin directly, bypassing the CDN. The window
+# is a property of the server; edge availability is a separate concern.
+ENDPOINT="${LLM_ENDPOINT:-https://$HOST}"
 API_KEY="${LLAMA_API_KEY:-}"
 MODEL="${LLM_MODEL:-qwen3-14b}"
 
 # CONTEXT_SIZE_ISSUE.md asks for >= 8192; we target 16384 for headroom
 MIN_CONTEXT="${MIN_CONTEXT:-16384}"
-# twofit agent/base/providers.py:7
+# What clients request as max_output_tokens
 CLIENT_MAX_OUTPUT="${CLIENT_MAX_OUTPUT:-4096}"
 
 AUTH_HEADER=()
@@ -76,15 +80,36 @@ write_prompt() {
 # Sets $HTTP_CODE, writes body to $RESP_BODY. Must not be called via $(...),
 # which would discard the HTTP_CODE assignment in a subshell.
 RESP_BODY=""
+RESP_HDRS=""
 post_json() {
     local file="$1" timeout="${2:-120}"
     RESP_BODY="$TMPDIR_TEST/response.json"
-    HTTP_CODE=$(curl -s --max-time "$timeout" \
-        -o "$RESP_BODY" -w '%{http_code}' \
-        "$ENDPOINT/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
-        --data-binary "@$file") || HTTP_CODE="000"
+    RESP_HDRS="$TMPDIR_TEST/response.hdr"
+    local attempt
+    for attempt in 1 2; do
+        HTTP_CODE=$(curl -s --max-time "$timeout" \
+            -o "$RESP_BODY" -D "$RESP_HDRS" -w '%{http_code}' \
+            "$ENDPOINT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Expect:" \
+            ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
+            --data-binary "@$file") || HTTP_CODE="000"
+        # Retry once on a gateway error: those come from the CDN, not the model.
+        case "$HTTP_CODE" in
+            502|503|504|000) [[ "$attempt" == 1 ]] && { sleep 5; continue; } ;;
+        esac
+        break
+    done
+}
+
+# Who produced a gateway error: the edge, or the origin?
+explain_failure() {
+    local srv cfray
+    srv=$(grep -i '^server:' "$RESP_HDRS" 2>/dev/null | tr -d '\r' | head -1)
+    cfray=$(grep -i '^cf-ray:' "$RESP_HDRS" 2>/dev/null | tr -d '\r' | head -1)
+    [[ -n "$srv" ]] && echo "  ${srv}"
+    [[ -n "$cfray" ]] && echo "  ${cfray} (edge saw the request)"
+    [[ -s "$RESP_BODY" ]] && echo "  body: $(head -c 200 "$RESP_BODY" | tr -d '\n')"
 }
 
 # ── TEST 1 ────────────────────────────────────────────────────────────────────
@@ -93,10 +118,15 @@ post_json() {
 test_effective_context_meets_floor() {
     echo "TEST: effective per-request context >= $MIN_CONTEXT tokens"
 
-    write_prompt "$TMPDIR_TEST/overflow.txt" "" 6000
+    # Size the probe just past the floor rather than sending a fixed 66k
+    # tokens. A multi-hundred-KB body is enough to break the edge->origin path,
+    # which shows up as a 502 and tells us nothing about the window.
+    local reps=$(((MIN_CONTEXT + MIN_CONTEXT / 5) / 11 + 1))
+    write_prompt "$TMPDIR_TEST/overflow.txt" "" "$reps"
     jq -n --arg m "$MODEL" --rawfile c "$TMPDIR_TEST/overflow.txt" \
         '{model:$m, messages:[{role:"user",content:$c}], max_tokens:8}' \
         > "$TMPDIR_TEST/overflow.json"
+    echo "  probe: ~$((reps * 11)) tokens, $(stat -c%s "$TMPDIR_TEST/overflow.json") byte body"
 
     local result n_ctx
     post_json "$TMPDIR_TEST/overflow.json" 120
@@ -110,8 +140,7 @@ test_effective_context_meets_floor() {
             return
         fi
         fail "could not read .error.n_ctx (HTTP $HTTP_CODE)"
-        echo "$result" | head -c 400
-        echo
+        explain_failure
         return
     fi
 
@@ -131,7 +160,7 @@ test_long_prompt_completes() {
 
     write_prompt "$TMPDIR_TEST/long.txt" "Summarize the following text in one sentence." 550
     jq -n --arg m "$MODEL" --rawfile c "$TMPDIR_TEST/long.txt" \
-        '{model:$m, messages:[{role:"user",content:$c}], max_tokens:256}' \
+        '{model:$m, messages:[{role:"user",content:$c}], max_tokens:1024}' \
         > "$TMPDIR_TEST/long.json"
 
     local result content
@@ -140,24 +169,28 @@ test_long_prompt_completes() {
 
     if [[ "$HTTP_CODE" != "200" ]]; then
         fail "HTTP $HTTP_CODE on a ~6k-token prompt"
-        echo "$result" | jq -c '.error // .' 2>/dev/null | head -c 300
-        echo
+        explain_failure
         return
     fi
 
-    content=$(echo "$result" | jq -r '.choices[0].message.content // ""' 2>/dev/null)
+    # This test is about the prompt FITTING, not about output length. Qwen3 is
+    # a reasoning model, so a short max_tokens can be spent entirely on
+    # reasoning_content and leave content empty — that is not an overflow.
+    local used
+    content=$(echo "$result" | jq -r '.choices[0].message | (.content // "") + (.reasoning_content // "")' 2>/dev/null)
+    used=$(echo "$result" | jq -r '.usage.total_tokens // 0' 2>/dev/null)
+
     if [[ -z "$content" ]]; then
-        fail "HTTP 200 but empty content on a ~6k-token prompt"
+        fail "HTTP 200 but no output at all on a ~6k-token prompt"
         echo "$result" | jq -c '{finish_reason:.choices[0].finish_reason, usage}' 2>/dev/null
         return
     fi
-    pass "~6k-token prompt returned $(printf '%s' "$content" | wc -c) chars"
+    pass "~6k-token prompt processed ($used tokens total, no overflow)"
 }
 
 # ── TEST 3 ────────────────────────────────────────────────────────────────────
-# A tool turn is the biggest shape the client sends: schema + call + result.
-# This asserts it FITS. Whether tool-calling itself behaves correctly is a
-# separate concern and is not tested here.
+# A tool turn is the biggest shape a client sends: schema + call + result.
+# Asserts it FITS; tool-calling correctness is a separate concern.
 test_tool_shaped_turn_fits() {
     echo "TEST: a tool-shaped turn fits in the window"
 
@@ -204,8 +237,7 @@ test_tool_shaped_turn_fits() {
     fi
     if [[ "$HTTP_CODE" != "200" ]]; then
         fail "HTTP $HTTP_CODE on a tool-shaped turn"
-        echo "$result" | jq -c '.error // .' 2>/dev/null | head -c 300
-        echo
+        explain_failure
         return
     fi
 
@@ -239,8 +271,7 @@ test_no_silent_truncation() {
 
     if [[ "$HTTP_CODE" != "200" ]]; then
         fail "HTTP $HTTP_CODE on a realistic agent turn"
-        echo "$result" | jq -c '.error // .' 2>/dev/null | head -c 300
-        echo
+        explain_failure
         return
     fi
 

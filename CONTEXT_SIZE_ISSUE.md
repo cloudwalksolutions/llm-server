@@ -123,3 +123,20 @@ curl -s -H "Authorization: Bearer $LLAMACPP_API_KEY" \
   https://llm.cloudwalksolutions.ai/props \
   | jq '.default_generation_settings.n_ctx'
 ```
+
+---
+
+## RESOLVED — 2026-08-08
+
+Confirmed root cause from the live process: the instance was running
+`-c 32768 -np 12`, and llama.cpp divides `-c` across slots
+(`PAD256(32768/12) = 2816`). Both reported signatures came from that one setting.
+
+Effective per-request context is now **16384** (`-c 131072 -np 8`), verified from the
+server's own `/props`. `config/llama.yaml` now states `context_per_request` directly and
+deploy derives `-c`, so this class of bug can't recur silently.
+
+Note the endpoint runs one llama-server per model behind an nginx router, so
+`/props` is not reachable from outside — `make verify` reads it on the target.
+
+See `specs/context-window-deploy.md`.

@@ -1,208 +1,161 @@
-# Raising the effective context window — deploy runbook
+# Context window — architecture, deploy, and test runbook
 
-## What this changes and why
+## What was wrong
 
-TwoFit's tool-using agent turns failed against `llm.cloudwalksolutions.ai` because the
-effective per-request context was **2816 tokens**. Measured directly:
+The effective per-request context was **2816 tokens**, so any turn carrying a tool
+schema plus a tool result didn't fit.
 
-```json
-{"error":{"message":"request (60009 tokens) exceeds the available context size (2816 tokens)",
- "type":"exceed_context_size_error","n_prompt_tokens":60009,"n_ctx":2816}}
+Root cause, confirmed from the live process:
+
+```
+/opt/llm/instances/qwen3-14b.conf:  CONTEXT_SIZE=32768  PARALLEL_SLOTS=12
+    -c 32768 -np 12  ->  PAD256(32768/12) = PAD256(2730) = 2816
 ```
 
-**Root cause.** llama.cpp's `-c` is a *total* divided across slots:
+`-c` is a **total** that llama.cpp divides across slots:
 
 ```c
 n_ctx_seq = kv_unified ? n_ctx : GGML_PAD(n_ctx / n_seq_max, 256)
 ```
 
-`--kv-unified` is on by default *only when the slot count is auto*. Passing an explicit
-`--parallel N` silently turns it off and re-enables the division. Nothing in this repo
-knew those two knobs interacted.
+`--kv-unified` defaults on only when the slot count is auto; an explicit `--parallel`
+turns it off and re-enables the division. Nothing expressed the number that actually
+matters, so 12 slots silently produced 12 unusably small windows.
 
-**Fix.** `config/llama.yaml` now declares `context_per_request` — what a client actually
-gets — and deploy derives `-c = context_per_request × parallel_slots`, emitting
-`--no-kv-unified` explicitly rather than relying on a default.
+## Current state
 
-| | before | after |
+| instance | port | per request | slots | `-c` | KV |
+|---|---|---|---|---|---|
+| `qwen3-14b-1m` | 8081 | 40960 | 1 | 40960 | q4_0 |
+| `qwen3-14b` | 8082 | **16384** | 8 | 131072 | q8_0 |
+| `qwen3-8b` | 8083 | 4096 | 8 | 32768 | q8_0 |
+
+VRAM went from 78904 to ~41400 MiB of 98304. `qwen3-14b-1m` had been set to
+`-c 1048576`, but Qwen3's `n_ctx_train` is 40960 and llama.cpp caps a slot there
+(`the slot context (1048576) exceeds the training context of the model (40960) - capping`).
+It was reserving ~45 GiB of KV for a window it could never use. Going beyond 40960
+requires YaRN rope scaling, which degrades short prompts.
+
+## Architecture
+
+The target does **not** run a single llama-server. It runs one instance per model:
+
+```
+Cloudflare -> cloudflared -> nginx :8080 (njs router, /etc/llama-router/models.json)
+                               |-> 127.0.0.1:8081  llama-server@qwen3-14b-1m
+                               |-> 127.0.0.1:8082  llama-server@qwen3-14b
+                               `-> 127.0.0.1:8083  llama-server@qwen3-8b
+```
+
+- `llama-server@.service` is a **template** owned by the target, not this repo.
+- Each instance reads `/opt/llm/instances/<name>.conf` — these are what `make deploy` owns.
+- nginx routes on the request's `model` field via `models.json`.
+- Instances bind loopback only; nginx is the sole reachable path.
+
+`config/llama.yaml` mirrors this with a `defaults:` block plus per-instance overrides,
+and states `context_per_request` — deploy derives `-c = context_per_request × parallel_slots`
+and asserts the result survives PAD256 before touching anything.
+
+## Deploy
+
+```bash
+make deploy-dry     # per-instance diff; lists exactly which will restart
+make deploy         # writes changed confs, restarts only those, rolls back on failure
+make verify         # yaml == deployed conf == live process == /props
+```
+
+`make deploy` will refuse to run unless the target has `/opt/llm/instances`, the
+`llama-server@.service` template, the configured container runtime, and a router map
+whose ports agree with the config. It preserves each instance's API key rather than
+rewriting it, reads the written file back before restarting, and restarts only
+instances whose rendered config actually changed.
+
+## Tests
+
+| command | scope | needs |
 |---|---|---|
-| per request | 2816 | **16384** |
-| `-c` | (drifted) | 262144 |
-| slots | (drifted) | 16 |
+| `make test-unit` | 25 offline tests: validation, defaults/override merging, derived context, goldens | nothing |
+| `make verify` | 27 live checks across all 3 instances + router map | SSH |
+| `make test-context` | effective window, long prompt, tool-shaped turn, silent truncation | endpoint |
+| `make benchmark` | k6 decode + prefill load, compared against `bench/baseline.json` | endpoint |
 
-## Prerequisites
-
-1. **SSH access to `192.168.1.168`** (user `walkerobrien`). Add to `.env`:
-   ```
-   SSH_KEY=~/.ssh/id_ed25519      # or SSH_PASS=...
-   ```
-   Without this, `make deploy` / `make verify` cannot run.
-
-2. **Tools:** `yq`, `jq`, `k6`. Optional: `shellcheck` for `make lint`.
-
-3. `.env` also needs `LLM_HOST` and `LLAMA_API_KEY` for the endpoint-level tests. Note
-   the repo's `LLAMA_API_KEY` is for the dev box; the production key lives in
-   `apps/twofit-app/src/api/.env` as `LLAMACPP_API_KEY`.
-
-## Step 0 — Diagnose before changing anything (REQUIRED)
-
-The 2816 has three possible causes and only the live cmdline distinguishes them. **Do
-this first** — it also reveals whether prod is in router mode.
+`make test-context` and `make benchmark` accept `LLM_ENDPOINT` to hit the origin
+directly, which isolates the server from CDN problems:
 
 ```bash
-ssh walkerobrien@192.168.1.168 \
-  "tr '\0' ' ' < /proc/\$(pgrep -f llama-server | head -1)/cmdline; echo"
-ssh walkerobrien@192.168.1.168 \
-  "journalctl -u llama-server | grep -E 'n_ctx|n_seq_max|kv_unified|n_slots|rounding' | tail -20"
+LLM_ENDPOINT=http://<origin-host>:8080 ./tests/test-context-window.sh
+LLM_ENDPOINT=http://<origin-host>:8080 make benchmark
 ```
 
-**Stop and reassess if the cmdline has no `-m` flag.** `/v1/models` returns three models
-(`qwen3-14b-1m`, `qwen3-14b`, `qwen3-8b`), which suggests router mode (`--models-dir`,
-no `-m`). The unit this repo renders passes `-m`, so deploying it would change how prod
-serves models. Router mode needs `--models-preset` for per-model context instead.
+### Recorded baseline
 
-## Step 1 — Offline checks (no server needed, safe anywhere)
+`bench/baseline.json`, taken at 16384/request × 8 slots against the origin:
 
-```bash
-make lint          # shellcheck, if installed
-make test-unit     # 20 tests: golden renders, arithmetic, config validation
-make deploy-dry    # shows per-request context + derived flags + a diff vs the target
-```
-
-`make test-unit` must be green before going further. It asserts, among others:
-
-- `-c` is `context_per_request × parallel_slots`, not a division
-- `--no-kv-unified` is emitted explicitly
-- the podman/AMD unit names `llama-server`; the docker/NVIDIA unit must not
-- a quantized `cache_type_v` with `flash_attn: false` is **rejected**
-- the legacy `context_size` key is rejected with a migration message
-
-## Step 2 — Capture a baseline BEFORE deploying
-
-Regression detection needs a "before". This runs ~7 minutes of load against the endpoint.
-
-```bash
-BENCH_LABEL=baseline make benchmark
-cp bench/baseline.json bench/baseline.json   # already written by the label
-git add -f bench/baseline.json && git commit -m "bench: baseline before context change"
-```
-
-The record stamps `contextPerRequest` / `parallelSlots`, so a baseline is never silently
-compared across different configs.
-
-## Step 3 — Deploy
-
-```bash
-make deploy
-```
-
-Sequence: preflight (runtime/GPU/model checks, unit syntax) → back up conf + unit →
-write both → `daemon-reload` → restart → health check. On any failure an `ERR` trap
-restores both backups, restarts, and re-checks.
-
-The health check asserts more than HTTP 200 — `NRestarts` stable (catches a crash loop
-answering from a stale container), unit active, and a real completion returning.
-
-## Step 4 — Verify
-
-```bash
-make verify        # llama.yaml == /etc/llama-server.conf == running process
-make test-context  # the effective window; must go 3-RED -> green
-```
-
-`make verify` compares all three sources, including `-c`/`-np`/`--no-kv-unified` parsed
-out of `/proc/<pid>/cmdline` and `/props`'s per-slot `n_ctx`.
-
-`make test-context` is the acceptance gate:
-
-| assertion | before |
+| metric | value |
 |---|---|
-| effective `n_ctx` ≥ 16384 | FAIL (2816) |
-| a ~6k-token prompt completes | FAIL |
-| a tool-shaped turn fits | pass (1928 tokens) |
-| no silent truncation (`finish_reason != length`) | FAIL |
-| `max_output_tokens` 4096 fits the window | pass |
+| iterations | 248 |
+| HTTP failures | 0 |
+| context overflow errors | 0 |
+| decode p95 | 13.5 s |
+| prefill p95 | 18.9 s |
+| prompt processing avg | 106 ms |
+| output tokens/sec (aggregate) | 52.9 |
 
-## Step 5 — Confirm no regression
+`make benchmark` compares against this and exits 1 on a hard failure, 3 if the run had
+too few iterations to be conclusive, 99 on a k6 SLO breach.
 
-```bash
-make benchmark     # auto-compares against bench/baseline.json
-```
+**What gates vs. what's advisory.** HTTP failures and context-overflow errors gate hard —
+they're stable run to run, so any movement is real. Latency and throughput are reported
+but do **not** fail the build: two back-to-back runs against an identical server config
+moved decode median +34% while prefill median moved -15%, in opposite directions. The
+noise floor on this hardware exceeds any tolerance tight enough to be a useful gate.
 
-Exit codes: `0` clean · `1` regression beyond tolerance · `3` inconclusive (too few
-iterations) · `99` k6 SLO breach · `2` bad k6 config (*not* a perf problem).
+To make latency gate meaningfully, run the benchmark 5+ times with no changes, measure
+the spread, and set each band to roughly 2x it. The current bands are placeholders sized
+from two observations and deliberately wide.
 
-If a regression is an accepted trade:
+## Known issue: the Cloudflare tunnel
 
-```bash
-make benchmark-accept && git commit bench/baseline.json -m "bench: accept new baseline"
-```
+`make test-context` currently fails against the public endpoint with
+502s from the edge. This is **not** the inference server:
 
-## Step 6 — End-to-end from the client
+- origin responds in ~0.65 s and `make verify` passes 27/27
+- the same tests pass against `LLM_ENDPOINT=http://<origin-host>:8080`
+- nginx's access log shows **no** requests arriving from `127.0.0.1` (the tunnel)
+  while the 502s occur
+- cloudflared is `active` with 4 registered connections and logs no errors
 
-From `apps/twofit-app/src/api/` with the venv active. Run each **twice** — the old
-failure sat on a token boundary, so one green run isn't proof.
+So Cloudflare is not forwarding to a connected, healthy tunnel. Things to check, in
+order: the public hostname route for this tunnel in the Cloudflare dashboard, then
+`cloudflared` itself (running 2026.2.0, which warns it is outdated; 2026.7.3 is
+current), then the box's network — it is on WiFi (`wlp193s0`), which QUIC tolerates
+poorly.
 
-```bash
-make integration   # test_the_marketing_agent_combines_tool_use...
-behave features/marketing_agent.feature
-```
+Restarting `cloudflared` restores it briefly (a run at 03:00–03:02 passed 4/5), then it
+stops forwarding again. Pinning `protocol: http2` made it worse and was reverted.
+
+## Configuration notes
+
+- **`flash_attn: false` with a quantized `cache_type_v` does nothing.** llama.cpp
+  force-enables flash attention for a quantized V cache. `load_config` warns rather
+  than blocking, since this combination is in production and works.
+- **`cache_type_k` and `cache_type_v` must match.** Asymmetric pairs fall back to CPU
+  attention silently, 25–45× slower on prefill. Validation rejects mismatches.
+- **Don't exceed `n_ctx_train` (40960 for Qwen3).** llama.cpp caps the slot and the
+  extra KV is wasted, which is exactly what the 1M instance was doing.
+- **q4_0 KV carries ~50× the perplexity damage of q8_0.** `qwen3-14b-1m` still uses it;
+  worth revisiting now that it only needs 40960 tokens of cache.
+- **A `false` or `""` override needs `has()`, not yq's `//`.** `//` treats both as
+  absent, so a `false` instance value silently reverted to a `true` default. There is a
+  regression test for this.
 
 ## Rollback
 
 Automatic on deploy failure. Manual:
 
 ```bash
-ssh walkerobrien@192.168.1.168 \
-  "ls -t /etc/llama-server.conf.backup.* /etc/systemd/system/llama-server.service.backup.* | head"
-# then, as root:
-#   cp /etc/llama-server.conf.backup.<ts> /etc/llama-server.conf
-#   cp /etc/systemd/system/llama-server.service.backup.<ts> /etc/systemd/system/llama-server.service
-#   systemctl daemon-reload && systemctl restart llama-server
+ssh <user>@<host> "ls -t /opt/llm/instances/<name>.conf.backup.* | head"
+# as root: cp <backup> /opt/llm/instances/<name>.conf
+#          systemctl restart llama-server@<name>
 make verify
-```
-
-## Configuration reference
-
-Full schema and comments: `config/llama.example.yaml`. `config/llama.yaml` is gitignored,
-so the example file is the only record of the schema — update it when adding keys.
-
-The three settings most likely to need retuning on this box:
-
-- **`parallel_slots: 16`** × `context_per_request: 16384` → 262144 total.
-  KV at f16 ≈ **40 GiB** (40 layers, 160 MiB per 1024 tokens) + ~9 GB model.
-- **`flash_attn: false`** — the AMD Vulkan backend has no GPU FA kernel and falls back to
-  CPU (~50% loss). A quantized `cache_type_v` would force FA back on, which is why
-  `load_config` now rejects that combination instead of letting it pass silently.
-- **`ubatch_size: 512`** (not 2048) — with FA off the KQ tensor is materialized and scales
-  with `n_ctx × n_ubatch × n_heads`: ~1.3 GB at 512 vs ~5.4 GB at 2048 for 16384-token
-  slots. Raise it once the prefill benchmark shows it pays.
-
-## Things deliberately not done
-
-- **No YaRN.** Every framework implements *static* YaRN, so it degrades short prompts.
-  Qwen3's native `n_ctx_train` is 40960 — well above our 16384.
-- **No KV quantization.** q8_0 is safe (+0.05% perplexity) but forces flash attention on,
-  and memory isn't the constraint at 128 GB. If ever enabled, `cache_type_k` and
-  `cache_type_v` **must match** — asymmetric pairs fall back to CPU attention silently.
-- **`--context-shift` left off.** It converts silent truncation into rambling generation
-  with a forgotten middle — worse for a tool-calling agent.
-- **`--models-dir` dropped.** It is a no-op alongside `-m` and fatal on images older than
-  2025-12.
-- **No nginx changes.** `/props` is 404'd at the edge by the reverse proxy, not by
-  llama.cpp auth. Exposing a read-only context-window endpoint would let the client team
-  self-serve, but it touches production serving and needs separate sign-off.
-
-## Finishing the in-progress merge
-
-A merge of `a0bce03 "rm config"` is currently unresolved in the index. The working tree is
-already correct; the remaining steps are git bookkeeping:
-
-```bash
-git rm --cached config/llama.yaml          # they untracked it; .gitignore now covers it
-git add scripts/lib/common.sh scripts/deploy-llama.sh scripts/benchmark.k6.js
-git add config/llama.example.yaml tests/ specs/
-git status                                 # confirm nothing unresolved
-make test-unit                             # 20/20 before committing
-git commit
 ```

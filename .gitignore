@@ -1,7 +1,23 @@
-
 **/.claude
 **/.DS_Store
 
+# Secrets: .env holds LLAMA_API_KEY and SSH_PASS.
+# The glob matters — timestamped backups leak the same values.
 .env
+.env.*
+*.env.bak*
 
+# Deploy target config. See the note in specs/context-window-deploy.md about
+# tracking this instead — it holds no secrets, and ignoring it is why the
+# deployed config drifted unnoticed.
 **/llama.yaml
+
+# Benchmark runs are transient; bench/baseline.json is committed on purpose
+# so an accepted perf trade shows up as a reviewable diff.
+bench/*.json
+!bench/baseline.json
+
+# Config backups pulled down from a target
+*.conf.backup.*
+*.conf.bak.*
+*.service.backup.*

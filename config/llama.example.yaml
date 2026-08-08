@@ -1,83 +1,102 @@
-# llama-server Configuration
-# Copy this file to config/llama.yaml and customize for your setup.
+# llama-server configuration — copy to config/llama.yaml and edit.
+#
 # config/llama.yaml is gitignored, so this file is the record of the schema.
+# Every value below is also validated by scripts/lib/common.sh; run
+# `make test-unit` after changing the schema.
 
-# Remote server connection (password/key set in .env file)
+# Where to deploy. Auth comes from .env (SSH_KEY or SSH_PASS).
 remote:
-  host: 192.168.1.168
-  user: walkerobrien
+  host: 10.0.0.9
+  user: youruser
 
-# Container runtime and GPU vendor of the TARGET machine.
-# Deploy refuses to run if these don't match what's installed there — an
-# AMD/podman unit on an NVIDIA/docker host produces a service that cannot start.
 runtime:
-  engine: podman       # podman | docker
-  gpu: amd             # amd | nvidia
+  engine: podman              # podman | docker — must match the target
+  gpu: amd                    # amd | nvidia   — must match the target
+  instances_dir: /opt/llm/instances
+  router_map: /etc/llama-router/models.json
 
-llama:
-  # Context window a SINGLE REQUEST gets. This is the number clients care about
-  # and the one that appears as n_ctx in errors and /props.
-  #
-  # llama.cpp's -c is a TOTAL that gets divided across slots:
-  #   n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / parallel_slots)
-  # Deploy derives -c for you, so set the number you actually want.
-  context_per_request: 16384
-
-  # Concurrent request slots. With kv_unified: false each slot gets its own
-  # dedicated window, so total KV = parallel_slots × context_per_request.
-  #
-  # NOTE: On AMD APU, Vulkan GPU compute shows as D-state processes in load
-  # average. Load avg of 60+ during inference is EXPECTED — GPU work, not CPU
-  # overload.
-  parallel_slots: 16
-
-  # false = dedicated per-slot windows (predictable, more memory)
-  # true  = one shared pool any request may use (cheaper, slots contend)
+# Applied to every instance unless the instance overrides it.
+defaults:
+  # false = each slot gets its own dedicated window (predictable, more memory)
+  # true  = one shared pool any single request may use (cheaper, slots contend)
   kv_unified: false
 
   # batch_size is logical, ubatch_size physical. ubatch <= batch.
-  # With flash_attn: false the KQ tensor is materialized and scales with
-  # n_ctx × n_ubatch × n_heads — a large ubatch gets expensive at large context.
+  # With flash_attn off the KQ tensor is materialized and grows with
+  # n_ctx x n_ubatch, so a big ubatch gets expensive at large context.
   batch_size: 2048
   ubatch_size: 512
 
-  # threads_gen should equal physical core count — hyperthreading hurts LLM
+  # threads_gen should equal PHYSICAL core count; hyperthreading hurts
   # inference. batch/http are fine oversubscribed.
   threads_gen: 16
   threads_batch: 12
-  threads_http: 10
+  threads_http: 6
 
-  # Prompt cache reuse threshold. Lower = more aggressive caching.
-  cache_reuse: 256
+  cache_reuse: 256            # prompt cache reuse threshold, lower = more aggressive
 
   # KV cache quantization. The two MUST match — asymmetric types fall back to
   # CPU attention silently and run 25-45x slower.
-  #   f16:  full precision, 160 MiB per 1024 tokens on a 40-layer model
-  #   q8_0: ~half the memory, <0.1% quality loss — but REQUIRES flash_attn: true
-  #   q4_0: quarter memory, ~50x the perplexity damage of q8_0 — avoid
-  cache_type_k: f16
-  cache_type_v: f16
+  #   f16:  full precision. 160 MiB per 1024 tokens on a 40-layer model.
+  #   q8_0: ~half the memory, <0.1% quality loss. Forces flash_attn on.
+  #   q4_0: quarter memory, ~50x the perplexity damage of q8_0. Avoid.
+  cache_type_k: q8_0
+  cache_type_v: q8_0
 
-  # Flash attention — DISABLE on the AMD Vulkan backend. There is no GPU FA
-  # kernel there, so it falls back to CPU (~50% perf drop). Enable on ROCm/CUDA.
-  # A quantized cache_type_v forces this on regardless, which is why
-  # load_config rejects that combination rather than letting it pass silently.
+  # Disable on the AMD Vulkan backend — there is no GPU FA kernel there, so it
+  # falls back to CPU. Note a quantized cache_type_v forces this on regardless;
+  # deploy warns when the two settings contradict.
   flash_attn: false
 
-  # Speculative decoding — requires a small draft model from the same family
-  # (~1.8-2.5x speedup). Empty string disables it.
-  # Download with: make add-model REPO=Qwen/Qwen3-1.5B-GGUF MODEL=Qwen3-1.5B-Q4_K_M.gguf
-  # Note: a quantized KV cache can collapse draft acceptance; prefer f16 here.
+  # Speculative decoding. Needs a small draft model of the same family.
+  # Empty string disables it. A quantized KV cache can collapse draft
+  # acceptance, so prefer f16 when using this.
   draft_model: ""
   draft_max: 16
 
-# System resource limits (usually don't need to change)
+  container_image: docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv
+
+# One entry per model. Each becomes llama-server@<name>.service reading
+# <instances_dir>/<name>.conf, and each must already exist on the target —
+# adding one also needs a router_map entry, which deploy does not manage.
+#
+# The instance NAME is what clients pass as "model".
+instances:
+  my-model:
+    port: 8082
+    model_file: Qwen3-14B-Q4_K_M.gguf
+
+    # THE important number: what a SINGLE request gets.
+    #
+    # llama.cpp's -c is a TOTAL it divides across slots:
+    #   n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / parallel_slots)
+    # so setting -c directly is how you end up serving tiny windows by
+    # accident. Deploy derives -c = context_per_request x parallel_slots and
+    # refuses to proceed if the result wouldn't survive that rounding.
+    #
+    # Do not exceed the model's training context (40960 for Qwen3) — llama.cpp
+    # caps the slot there and the extra KV is simply wasted.
+    context_per_request: 16384
+
+    # Concurrent requests for this model. Total KV scales with
+    # parallel_slots x context_per_request.
+    parallel_slots: 8
+
+  # Instances inherit defaults and override only what differs.
+  my-small-model:
+    port: 8083
+    model_file: Qwen3-8B-Q4_K_M.gguf
+    context_per_request: 4096
+    parallel_slots: 8
+    threads_gen: 8
+    threads_batch: 6
+    threads_http: 4
+
 resources:
   limit_nofile: 65535
   limit_memlock: infinity
 
-# Benchmarking configuration
 benchmark:
-  concurrent_requests: 16   # Match parallel_slots for testing
+  concurrent_requests: 8
   max_tokens: 100
   timeout: 120

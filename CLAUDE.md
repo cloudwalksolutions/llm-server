@@ -2,54 +2,90 @@
 
 ## What This Is
 
-Tooling for deploying and managing llama-server (llama.cpp) inference servers. Scripts install the server on target machines; `config/llama.yaml` + `make` commands handle remote config deployment and management.
+Tooling for deploying and managing llama-server (llama.cpp) inference servers. Install
+scripts bootstrap a target machine; `config/llama.yaml` + `make` handle config
+deployment, verification, and load testing.
 
-## Server Targets
+## Architecture — read this before changing deploy
 
-To switch deploy target, update `remote.host` and `remote.user` in `config/llama.yaml` and tune the performance parameters to match that machine.
+A target runs **one llama-server instance per model**, not a single server:
+
+```
+client -> cloudflared -> nginx :8080 (njs router, /etc/llama-router/models.json)
+                           |-> 127.0.0.1:8081  llama-server@<name-a>
+                           |-> 127.0.0.1:8082  llama-server@<name-b>
+```
+
+- `llama-server@.service` is a systemd **template** owned by the target.
+- Each instance reads `<instances_dir>/<name>.conf` — those files are what
+  `deploy-llama.sh` renders and owns.
+- nginx routes on the request's `model` field; the instance name IS the model name.
+- Instances bind loopback only.
+
+There is no `/etc/llama-server.conf` on a migrated target. Install scripts still create
+one for a fresh single-instance box, but the deploy path does not use it.
+
+## The core invariant
+
+llama.cpp's `-c` is a **total** divided across slots:
+
+```c
+n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / n_parallel)
+```
+
+So `config/llama.yaml` states `context_per_request` — what one request actually gets —
+and deploy derives `-c = context_per_request × parallel_slots`, asserting the result
+survives that rounding. Never set `-c` directly; that is how the window silently
+became 2816 tokens.
 
 ## Key Files
 
-- `config/llama.yaml` — active deploy target and performance tuning (not in git)
-- `config/llama.example.yaml` — template
-- `scripts/deploy-llama.sh` — SSH into target, write `/etc/llama-server.conf`, restart service
-- `scripts/install-llama.sh` — bootstrap for AMD Strix Halo / Fedora
-- `scripts/install-llama-nvidia.sh` — bootstrap for NVIDIA / Ubuntu/Mint
-- `scripts/lib/common.sh` — shared SSH helpers (`remote_exec`, `remote_exec_sudo`), YAML parsing
-- `.env` — `SSH_PASS` or `SSH_KEY` for remote auth (not in git)
+- `config/llama.yaml` — deploy target, `defaults:` + `instances:` (gitignored)
+- `config/llama.example.yaml` — the schema of record; a test asserts it stays valid
+- `scripts/deploy-llama.sh` — renders instance confs, preflights, restarts only what changed, rolls back on failure
+- `scripts/lib/common.sh` — config load/validation (`load_config`, `load_instance`), SSH helpers
+- `scripts/verify-deploy.sh` — asserts yaml == deployed conf == live process == `/props`
+- `tests/test-render.sh` — offline suite; no network, no SSH
+- `.env` — `LLM_HOST`, `LLAMA_API_KEY`, and `SSH_PASS` or `SSH_KEY` (gitignored)
 
-## Deploy Workflow
+## Workflow
 
 ```
 edit config/llama.yaml
        ↓
-make deploy-dry     # preview
+make test-unit      # offline: validation, arithmetic, goldens
        ↓
-make deploy         # SSH → /etc/llama-server.conf → systemd restart → health check
+make deploy-dry     # per-instance diff; names what would restart
+       ↓
+make deploy         # rollback armed
+       ↓
+make verify         # config vs deployed vs running process
 ```
 
 ## Make Targets
 
 ```
-make deploy         Push llama.yaml settings to remote server
-make deploy-dry     Preview without applying
-make status         Show server status and metrics
-make logs           Last 50 log lines
-make logs-f         Live log tail
-make ssh            SSH into server (with port-forward for metrics)
-make test           Remote API tests
-make benchmark      k6 load tests
-make list-models    List models on remote
-make switch-model MODEL=file.gguf
-make add-model REPO=org/repo MODEL=file.gguf
+make lint | test-unit | test-context | verify | test | test-models | benchmark
+make deploy | deploy-dry | benchmark-accept
+make status | logs | logs-f | config | ssh
+make start | stop | restart | enable | disable
+make list-models | switch-model MODEL=f.gguf [INSTANCE] | add-model REPO=r MODEL=f.gguf
 ```
 
-## Install Scripts
+## Conventions
 
-Both install scripts:
-- Create `/opt/llm/models/` and download Qwen3-8B, Qwen3-14B, DeepSeek-R1-32B
-- Write `/etc/llama-server.conf` and a systemd service unit
-- Install `llm-status`, `llm-health`, `llm-logs`, `llm-switch` to `/opt/llm/bin/`
-- Optionally set up a Cloudflare Tunnel
+- Tests are plain bash with a pass/fail counter, matching `tests/test-*.sh`. A suite
+  exits non-zero if any assertion failed.
+- Behavioural claims in comments should have a test. `tests/test-render.sh` covers the
+  context arithmetic, defaults/override merging, config rejection, and shell quoting.
+- Golden files live in `tests/golden/`; regenerate with `make test-unit-accept` and
+  **read the diff** — they were once regenerated from a wrong render.
+- `yq`'s `//` treats `false` and `""` as absent. Use `has()` for anything boolean or
+  string-optional.
+- `remote_exec_sudo` consumes stdin to feed `sudo -S`; never pipe file content through
+  it. Use `remote_write_sudo`.
 
-Differences: AMD script uses podman + Vulkan image + `dnf` + `firewall-cmd`. NVIDIA script uses docker + CUDA image + `apt` + `ufw` + `nvidia-container-toolkit`.
+## Docs
+
+- `specs/context-window-deploy.md` — architecture, runbook, perf baseline, known issues
+- `specs/ollama.md` — why the Ollama backend is installable but unmanaged

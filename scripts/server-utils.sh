@@ -62,6 +62,15 @@ show_status() {
     echo ""
 }
 
+ssh_in() {
+    if [[ "$SSH_AUTH" == "local" ]]; then
+        echo -e "${YELLOW}Target is this machine — no SSH needed.${NC}"
+        return 0
+    fi
+    echo -e "${BLUE}SSH into $REMOTE_USER@$REMOTE_HOST (metrics forwarded to :9090)...${NC}"
+    _ssh_run -t -L 9090:localhost:9090 "$REMOTE_USER@$REMOTE_HOST"
+}
+
 show_logs() {
     remote_exec "journalctl -u llama-server -n 50 --no-pager"
 }

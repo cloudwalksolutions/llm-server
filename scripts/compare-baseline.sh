@@ -43,10 +43,12 @@ done
 echo ""
 
 fail=0
+advisory=0
 printf '%-46s %12s %12s %9s  %s\n' METRIC BASELINE CURRENT DELTA VERDICT
 
+# mode: "gate" fails the build, "advisory" reports but does not.
 cmp_metric() {
-    local m="$1" s="$2" dir="$3" tol="$4"
+    local m="$1" s="$2" dir="$3" tol="$4" mode="${5:-gate}"
     local b c out
     b=$(jq -r --arg m "$m" --arg s "$s" '.metrics[$m].values[$s] // "null"' "$BASE")
     c=$(jq -r --arg m "$m" --arg s "$s" '.metrics[$m].values[$s] // "null"' "$CUR")
@@ -59,28 +61,54 @@ cmp_metric() {
     out=$(awk -v b="$b" -v c="$c" -v d="$dir" -v t="$tol" 'BEGIN{
         dl = (b == 0) ? 0 : (c - b) / b
         ok = (d == "lower") ? (c <= b * (1 + t)) : (c >= b * (1 - t))
-        printf "%+.1f%% %s", dl * 100, (ok ? "ok" : "REGRESSION")
+        printf "%+.1f%% %s", dl * 100, (ok ? "ok" : "OVER")
     }')
     local delta="${out%% *}" verdict="${out##* }"
 
     local colour="$GREEN"
-    [[ "$verdict" == "REGRESSION" ]] && { colour="$RED"; fail=$((fail + 1)); }
+    if [[ "$verdict" == "OVER" ]]; then
+        if [[ "$mode" == "gate" ]]; then
+            colour="$RED"; verdict="REGRESSION"; fail=$((fail + 1))
+        else
+            colour="$YELLOW"; verdict="slower"; advisory=$((advisory + 1))
+        fi
+    fi
     printf '%-46s %12s %12s %9s  '"$colour"'%s'"$NC"'\n' \
         "$m $s" "$(printf '%.1f' "$b")" "$(printf '%.1f' "$c")" "$delta" "$verdict"
 }
 
-# Latency: lower is better. p99 gets a loose band — it needs ~1000 samples to
-# stabilise and this profile produces a few hundred.
-cmp_metric 'http_req_duration{phase:decode}'  'p(95)' lower  0.10
-cmp_metric 'http_req_duration{phase:decode}'  'med'   lower  0.10
-cmp_metric 'http_req_duration{phase:prefill}' 'p(95)' lower  0.15
-cmp_metric 'http_req_duration{phase:prefill}' 'med'   lower  0.15
-cmp_metric 'http_req_duration{phase:decode}'  'p(99)' lower  0.25
-cmp_metric 'llm_prompt_ms'                    'p(95)' lower  0.20
+# Correctness. These are stable run to run, so they gate hard.
+cmp_rate_gate() {
+    local m="$1" label="$2" c
+    c=$(jq -r --arg m "$m" '.metrics[$m].values.rate // 0' "$CUR")
+    if awk -v c="$c" 'BEGIN{exit !(c > 0)}'; then
+        printf '%-46s %12s %12s %9s  '"$RED"'FAIL'"$NC"'\n' "$label" "0" "$c" "-"
+        fail=$((fail + 1))
+    else
+        printf '%-46s %12s %12s %9s  '"$GREEN"'ok'"$NC"'\n' "$label" "0" "$c" "-"
+    fi
+}
 
-# Throughput: higher is better.
-cmp_metric 'llm_tokens_per_sec' 'avg'  higher 0.08
-cmp_metric 'http_reqs'          'rate' higher 0.10
+# Correctness first. These don't drift with load, so a change here is real.
+cmp_rate_gate 'http_req_failed{phase:decode}'  'http failures (decode)'
+cmp_rate_gate 'http_req_failed{phase:prefill}' 'http failures (prefill)'
+cmp_rate_gate 'llm_context_errors'             'context overflow errors'
+
+# Latency and throughput are ADVISORY on this hardware. Two back-to-back runs
+# with an identical server config moved decode med by +34% while prefill med
+# moved -15% — opposite directions, so the run-to-run noise floor exceeds any
+# tolerance tight enough to be useful as a gate. They're reported, not enforced.
+#
+# To make these gate meaningfully: run the benchmark 5+ times unchanged, take
+# the spread, and set each band to ~2x it. Bands below are a rough placeholder
+# sized from two observations, deliberately wide.
+cmp_metric 'http_req_duration{phase:decode}'  'p(95)' lower  0.40 advisory
+cmp_metric 'http_req_duration{phase:decode}'  'med'   lower  0.40 advisory
+cmp_metric 'http_req_duration{phase:prefill}' 'p(95)' lower  0.40 advisory
+cmp_metric 'http_req_duration{phase:prefill}' 'med'   lower  0.40 advisory
+cmp_metric 'llm_prompt_ms'                    'p(95)' lower  0.40 advisory
+cmp_metric 'llm_tokens_per_sec' 'avg'  higher 0.30 advisory
+cmp_metric 'http_reqs'          'rate' higher 0.30 advisory
 
 echo ""
 mapfile -t tfails < <(jq -r '.thresholdsFailed[]?' "$CUR")
@@ -91,8 +119,13 @@ if ((${#tfails[@]} > 0)); then
 fi
 
 if ((fail > 0)); then
-    echo -e "${RED}$fail regression(s) beyond tolerance${NC}"
+    echo -e "${RED}$fail hard failure(s)${NC}"
     echo "If this is an accepted trade, run: make benchmark-accept"
     exit 1
+fi
+if ((advisory > 0)); then
+    echo -e "${YELLOW}No failures. $advisory metric(s) slower than baseline —"
+    echo -e "advisory only; re-run before drawing a conclusion.${NC}"
+    exit 0
 fi
 echo -e "${GREEN}No regressions${NC}"

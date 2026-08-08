@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "label": "baseline",
+  "testRunDurationMs": 468972.887757,
+  "env": {
+    "contextPerRequest": "16384",
+    "parallelSlots": "8",
+    "totalContext": "131072",
+    "model": "qwen3-14b",
+    "maxVUs": 8,
+    "endpointKind": "origin"
+  },
+  "thresholdsFailed": [],
+  "metrics": {
+    "http_req_duration{phase:decode}": {
+      "type": "trend",
+      "values": {
+        "count": 198,
+        "avg": 9535.970497737373,
+        "min": 4198.851831,
+        "med": 8839.06832,
+        "max": 18991.61439,
+        "p(90)": 12377.2538043,
+        "p(95)": 13505.918794449999,
+        "p(99)": 18090.2581545
+      }
+    },
+    "http_req_duration{phase:prefill}": {
+      "type": "trend",
+      "values": {
+        "max": 23754.840232,
+        "p(90)": 17314.021807700003,
+        "p(95)": 18868.383382399996,
+        "p(99)": 23628.26268819,
+        "count": 48,
+        "avg": 11718.183810854169,
+        "min": 4540.683526,
+        "med": 12588.891982000001
+      }
+    },
+    "http_req_failed{phase:decode}": {
+      "type": "rate",
+      "values": {
+        "rate": 0,
+        "passes": 0,
+        "fails": 198
+      }
+    },
+    "http_req_failed{phase:prefill}": {
+      "type": "rate",
+      "values": {
+        "rate": 0,
+        "passes": 0,
+        "fails": 48
+      }
+    },
+    "http_reqs": {
+      "type": "counter",
+      "values": {
+        "count": 248,
+        "rate": 0.5288152182658843
+      }
+    },
+    "iterations": {
+      "type": "counter",
+      "values": {
+        "count": 248,
+        "rate": 0.5288152182658843
+      }
+    },
+    "checks": {
+      "type": "rate",
+      "values": {
+        "rate": 1,
+        "passes": 744,
+        "fails": 0
+      }
+    },
+    "llm_prompt_ms": {
+      "type": "trend",
+      "values": {
+        "med": 101.13550000000001,
+        "max": 279.701,
+        "p(90)": 151.2770000000001,
+        "p(95)": 195.39484999999996,
+        "p(99)": 238.20653,
+        "count": 248,
+        "avg": 105.83456451612909,
+        "min": 40.296
+      }
+    },
+    "llm_tokens_per_sec": {
+      "type": "trend",
+      "values": {
+        "med": 12.74962084272099,
+        "max": 24.66135033716998,
+        "p(90)": 16.538656254161232,
+        "p(95)": 20.020020509777954,
+        "p(99)": 24.615974293055114,
+        "count": 248,
+        "avg": 12.814642237743769,
+        "min": 6.0010674698815425
+      }
+    },
+    "llm_output_tokens": {
+      "type": "counter",
+      "values": {
+        "count": 24800,
+        "rate": 52.881521826588425
+      }
+    },
+    "llm_context_errors": {
+      "type": "rate",
+      "values": {
+        "rate": 0,
+        "passes": 0,
+        "fails": 248
+      }
+    }
+  }
+}

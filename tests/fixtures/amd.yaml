@@ -2,12 +2,14 @@
 remote:
   host: 10.0.0.9
   user: testuser
+
 runtime:
   engine: podman
   gpu: amd
-llama:
-  context_per_request: 16384
-  parallel_slots: 4
+  instances_dir: /opt/llm/instances
+  router_map: /etc/llama-router/models.json
+
+defaults:
   kv_unified: false
   batch_size: 2048
   ubatch_size: 512
@@ -15,8 +17,32 @@ llama:
   threads_batch: 8
   threads_http: 6
   cache_reuse: 256
-  cache_type_k: f16
-  cache_type_v: f16
-  flash_attn: false
+  cache_type_k: q8_0
+  cache_type_v: q8_0
+  flash_attn: true
   draft_model: ""
   draft_max: 16
+  container_image: example.invalid/llama:test
+
+instances:
+  # Exercises pure defaults
+  base:
+    port: 8082
+    model_file: Model-A.gguf
+    context_per_request: 16384
+    parallel_slots: 4
+
+  # Exercises per-instance overrides, including a `false` override of a `true`
+  # default — yq's // operator treats false as absent, so this is a regression
+  # test for that.
+  overridden:
+    port: 8083
+    model_file: Model-B.gguf
+    context_per_request: 4096
+    parallel_slots: 8
+    cache_type_k: f16
+    cache_type_v: f16
+    flash_attn: false
+    threads_gen: 8
+    draft_model: Draft-B.gguf
+    draft_max: 24

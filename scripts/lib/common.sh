@@ -33,12 +33,15 @@ _require_enum() {
     fi
 }
 
-# Load YAML config and export as environment variables
-load_config() {
-    local config_file="${1:-config/llama.yaml}"
+CONFIG_FILE=""
+declare -A _WARNED=()
 
-    if [[ ! -f "$config_file" ]]; then
-        _cfg_err "$config_file not found"
+# Load the global sections and the instance list.
+load_config() {
+    CONFIG_FILE="${1:-config/llama.yaml}"
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        _cfg_err "$CONFIG_FILE not found"
         echo "Run 'make setup' to create configuration" >&2
         return 1
     fi
@@ -47,89 +50,28 @@ load_config() {
         return 1
     fi
 
-    REMOTE_HOST=$(yq '.remote.host' "$config_file")
-    REMOTE_USER=$(yq '.remote.user' "$config_file")
+    REMOTE_HOST=$(yq '.remote.host' "$CONFIG_FILE")
+    REMOTE_USER=$(yq '.remote.user' "$CONFIG_FILE")
+    RUNTIME_ENGINE=$(yq '.runtime.engine' "$CONFIG_FILE")
+    RUNTIME_GPU=$(yq '.runtime.gpu' "$CONFIG_FILE")
+    INSTANCES_DIR=$(yq '.runtime.instances_dir // "/opt/llm/instances"' "$CONFIG_FILE")
+    ROUTER_MAP=$(yq '.runtime.router_map // "/etc/llama-router/models.json"' "$CONFIG_FILE")
 
-    RUNTIME_ENGINE=$(yq '.runtime.engine' "$config_file")
-    RUNTIME_GPU=$(yq '.runtime.gpu' "$config_file")
-
-    PARALLEL_SLOTS=$(yq '.llama.parallel_slots' "$config_file")
-    CONTEXT_PER_REQUEST=$(yq '.llama.context_per_request' "$config_file")
-    KV_UNIFIED=$(yq '.llama.kv_unified' "$config_file")
-    BATCH_SIZE=$(yq '.llama.batch_size' "$config_file")
-    UBATCH_SIZE=$(yq '.llama.ubatch_size' "$config_file")
-    THREADS_GEN=$(yq '.llama.threads_gen' "$config_file")
-    THREADS_BATCH=$(yq '.llama.threads_batch' "$config_file")
-    THREADS_HTTP=$(yq '.llama.threads_http' "$config_file")
-    CACHE_REUSE=$(yq '.llama.cache_reuse' "$config_file")
-    CACHE_TYPE_K=$(yq '.llama.cache_type_k' "$config_file")
-    CACHE_TYPE_V=$(yq '.llama.cache_type_v' "$config_file")
-    FLASH_ATTN=$(yq '.llama.flash_attn' "$config_file")
-    DRAFT_MAX=$(yq '.llama.draft_max' "$config_file")
-    # yq renders an empty string as '""'; normalise both that and "null" away
-    DRAFT_MODEL=$(yq '.llama.draft_model' "$config_file")
-    DRAFT_MODEL="${DRAFT_MODEL//\"/}"
-    [[ "$DRAFT_MODEL" == "null" ]] && DRAFT_MODEL=""
-
-    # The old key meant a TOTAL that llama.cpp silently divided by the slot
-    # count. Refuse to guess which one the user meant.
-    local legacy
-    legacy=$(yq '.llama.context_size' "$config_file")
-    if [[ "$CONTEXT_PER_REQUEST" == "null" && "$legacy" != "null" ]]; then
-        _cfg_err "'context_size' is no longer supported; use 'context_per_request'"
-        echo "  context_size was a TOTAL divided across parallel_slots." >&2
-        echo "  context_per_request is what a single request actually gets." >&2
-        echo "  Equivalent of context_size: $legacy with $PARALLEL_SLOTS slots" \
-             "is context_per_request: $((legacy / ${PARALLEL_SLOTS:-1}))" >&2
-        return 1
-    fi
-
-    _require_int "llama.parallel_slots" "$PARALLEL_SLOTS" || return 1
-    _require_int "llama.context_per_request" "$CONTEXT_PER_REQUEST" || return 1
-    _require_int "llama.batch_size" "$BATCH_SIZE" || return 1
-    _require_int "llama.ubatch_size" "$UBATCH_SIZE" || return 1
-    _require_int "llama.threads_gen" "$THREADS_GEN" || return 1
-    _require_int "llama.threads_batch" "$THREADS_BATCH" || return 1
-    _require_int "llama.threads_http" "$THREADS_HTTP" || return 1
-    _require_int "llama.cache_reuse" "$CACHE_REUSE" || return 1
-    _require_int "llama.draft_max" "$DRAFT_MAX" || return 1
-    _require_enum "llama.kv_unified" "$KV_UNIFIED" true false || return 1
-    _require_enum "llama.flash_attn" "$FLASH_ATTN" true false || return 1
     _require_enum "runtime.engine" "$RUNTIME_ENGINE" podman docker || return 1
     _require_enum "runtime.gpu" "$RUNTIME_GPU" amd nvidia || return 1
 
-    if ((UBATCH_SIZE > BATCH_SIZE)); then
-        _cfg_err "ubatch_size ($UBATCH_SIZE) must not exceed batch_size ($BATCH_SIZE)"
-        return 1
-    fi
-    # Asymmetric K/V types silently fall back to CPU attention: 25-45x slower.
-    if [[ "$CACHE_TYPE_K" != "$CACHE_TYPE_V" ]]; then
-        _cfg_err "cache_type_k ($CACHE_TYPE_K) must equal cache_type_v ($CACHE_TYPE_V)"
-        return 1
-    fi
-
-    # llama.cpp refuses to create a context with a quantized V cache unless
-    # flash attention is on, and with no -fa flag it defaults to 'auto' and
-    # force-enables FA anyway. Either way flash_attn:false is not honoured.
-    if [[ "$FLASH_ATTN" == "false" && "$CACHE_TYPE_V" != "f16" && "$CACHE_TYPE_V" != "f32" && "$CACHE_TYPE_V" != "bf16" ]]; then
-        _cfg_err "cache_type_v ($CACHE_TYPE_V) is quantized, which requires flash_attn: true"
-        echo "  llama.cpp: 'quantized V cache was requested, but this requires Flash Attention'." >&2
-        echo "  Set cache_type_k/v to f16, or set flash_attn: true." >&2
+    # The old schema was a single flat llama: block. Refuse to guess.
+    if [[ "$(yq '.instances' "$CONFIG_FILE")" == "null" ]]; then
+        _cfg_err "no 'instances:' block found"
+        echo "  This target runs one llama-server per model via llama-server@<name>.service." >&2
+        echo "  See config/llama.example.yaml for the schema." >&2
         return 1
     fi
 
-    # Quantizing the target model's KV cache is reported to collapse draft
-    # acceptance, which negates the speedup. Warn rather than block.
-    if [[ -n "$DRAFT_MODEL" && "$CACHE_TYPE_K" != "f16" ]]; then
-        echo -e "${YELLOW}Warning:${NC} draft_model with a quantized KV cache ($CACHE_TYPE_K)" >&2
-        echo "  can collapse draft acceptance. Consider f16 while speculative decoding." >&2
-    fi
-
-    # llama.cpp: n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / n_seq_max)
-    if [[ "$KV_UNIFIED" == "true" ]]; then
-        TOTAL_CONTEXT="$CONTEXT_PER_REQUEST"
-    else
-        TOTAL_CONTEXT=$((CONTEXT_PER_REQUEST * PARALLEL_SLOTS))
+    mapfile -t INSTANCE_NAMES < <(yq -r '.instances | keys | .[]' "$CONFIG_FILE")
+    if ((${#INSTANCE_NAMES[@]} == 0)); then
+        _cfg_err "'instances:' is empty"
+        return 1
     fi
 
     if [[ -f .env ]]; then
@@ -138,7 +80,6 @@ load_config() {
     fi
 
     # Not fatal: offline work (rendering, validation) needs no credentials.
-    # test_ssh and remote_exec fail loudly if they're actually needed.
     if _is_local_host; then
         SSH_AUTH="local"
     elif [[ -n "${SSH_KEY:-}" ]]; then
@@ -151,12 +92,117 @@ load_config() {
     fi
 
     export REMOTE_HOST REMOTE_USER SSH_AUTH SSH_KEY SSH_PASS
-    export RUNTIME_ENGINE RUNTIME_GPU
-    export PARALLEL_SLOTS BATCH_SIZE UBATCH_SIZE
-    export THREADS_GEN THREADS_BATCH THREADS_HTTP
-    export CACHE_REUSE CACHE_TYPE_K CACHE_TYPE_V
-    export CONTEXT_PER_REQUEST KV_UNIFIED TOTAL_CONTEXT
-    export FLASH_ATTN DRAFT_MODEL DRAFT_MAX
+    export RUNTIME_ENGINE RUNTIME_GPU INSTANCES_DIR ROUTER_MAP CONFIG_FILE
+}
+
+# Per-instance value, falling back to defaults.
+# Uses has() rather than `//` — yq's alternative operator treats `false` and ""
+# as absent, so `false // default` would silently return the default.
+_ivalue() {
+    local name="$1" key="$2"
+    if [[ "$(yq -r ".instances.\"$name\" | has(\"$key\")" "$CONFIG_FILE")" == "true" ]]; then
+        yq -r ".instances.\"$name\".$key" "$CONFIG_FILE"
+    elif [[ "$(yq -r ".defaults | has(\"$key\")" "$CONFIG_FILE")" == "true" ]]; then
+        yq -r ".defaults.$key" "$CONFIG_FILE"
+    else
+        printf 'null'
+    fi
+}
+
+# Populate INST_* for one instance and derive its context total.
+load_instance() {
+    local name="$1"
+    INST_NAME="$name"
+    INST_PORT=$(_ivalue "$name" port)
+    INST_MODEL_FILE=$(_ivalue "$name" model_file)
+    INST_CONTEXT_PER_REQUEST=$(_ivalue "$name" context_per_request)
+    INST_PARALLEL_SLOTS=$(_ivalue "$name" parallel_slots)
+    INST_KV_UNIFIED=$(_ivalue "$name" kv_unified)
+    INST_BATCH_SIZE=$(_ivalue "$name" batch_size)
+    INST_UBATCH_SIZE=$(_ivalue "$name" ubatch_size)
+    INST_THREADS_GEN=$(_ivalue "$name" threads_gen)
+    INST_THREADS_BATCH=$(_ivalue "$name" threads_batch)
+    INST_THREADS_HTTP=$(_ivalue "$name" threads_http)
+    INST_CACHE_REUSE=$(_ivalue "$name" cache_reuse)
+    INST_CACHE_TYPE_K=$(_ivalue "$name" cache_type_k)
+    INST_CACHE_TYPE_V=$(_ivalue "$name" cache_type_v)
+    INST_FLASH_ATTN=$(_ivalue "$name" flash_attn)
+    INST_DRAFT_MAX=$(_ivalue "$name" draft_max)
+    INST_CONTAINER_IMAGE=$(_ivalue "$name" container_image)
+
+    INST_DRAFT_MODEL=$(_ivalue "$name" draft_model)
+    [[ "$INST_DRAFT_MODEL" == "null" ]] && INST_DRAFT_MODEL=""
+
+    local p="instances.$name"
+    _require_int "$p.port" "$INST_PORT" || return 1
+    _require_int "$p.context_per_request" "$INST_CONTEXT_PER_REQUEST" || return 1
+    _require_int "$p.parallel_slots" "$INST_PARALLEL_SLOTS" || return 1
+    _require_int "$p.batch_size" "$INST_BATCH_SIZE" || return 1
+    _require_int "$p.ubatch_size" "$INST_UBATCH_SIZE" || return 1
+    _require_int "$p.threads_gen" "$INST_THREADS_GEN" || return 1
+    _require_int "$p.threads_batch" "$INST_THREADS_BATCH" || return 1
+    _require_int "$p.threads_http" "$INST_THREADS_HTTP" || return 1
+    _require_int "$p.cache_reuse" "$INST_CACHE_REUSE" || return 1
+    _require_int "$p.draft_max" "$INST_DRAFT_MAX" || return 1
+    _require_enum "$p.kv_unified" "$INST_KV_UNIFIED" true false || return 1
+    _require_enum "$p.flash_attn" "$INST_FLASH_ATTN" true false || return 1
+
+    if [[ -z "$INST_MODEL_FILE" || "$INST_MODEL_FILE" == "null" ]]; then
+        _cfg_err "$p.model_file is not set"
+        return 1
+    fi
+    if ((INST_UBATCH_SIZE > INST_BATCH_SIZE)); then
+        _cfg_err "$p: ubatch_size ($INST_UBATCH_SIZE) must not exceed batch_size ($INST_BATCH_SIZE)"
+        return 1
+    fi
+    # Asymmetric K/V types silently fall back to CPU attention: 25-45x slower.
+    if [[ "$INST_CACHE_TYPE_K" != "$INST_CACHE_TYPE_V" ]]; then
+        _cfg_err "$p: cache_type_k ($INST_CACHE_TYPE_K) must equal cache_type_v ($INST_CACHE_TYPE_V)"
+        return 1
+    fi
+
+    # A quantized V cache requires flash attention, so llama.cpp force-enables
+    # it and flash_attn:false silently has no effect. Warn rather than block:
+    # this combination is in production and works, it just doesn't mean what
+    # it says.
+    # load_instance is called repeatedly; only warn once per instance.
+    if [[ -z "${_WARNED[$name]:-}" ]]; then
+        _WARNED[$name]=1
+        case "$INST_CACHE_TYPE_V" in
+            f16|f32|bf16) ;;
+            *)
+                if [[ "$INST_FLASH_ATTN" == "false" ]]; then
+                    echo -e "${YELLOW}Warning:${NC} $p has flash_attn: false with a quantized cache_type_v ($INST_CACHE_TYPE_V)." >&2
+                    echo "  llama.cpp force-enables flash attention for a quantized V cache," >&2
+                    echo "  so flash_attn: false has no effect. Use f16 to actually disable it." >&2
+                fi
+                ;;
+        esac
+        # Quantizing the target model's KV cache can collapse draft acceptance.
+        if [[ -n "$INST_DRAFT_MODEL" && "$INST_CACHE_TYPE_K" != "f16" ]]; then
+            echo -e "${YELLOW}Warning:${NC} $p uses a draft model with a quantized KV cache ($INST_CACHE_TYPE_K)," >&2
+            echo "  which can collapse draft acceptance. Consider f16 while speculative decoding." >&2
+        fi
+    fi
+
+    # llama.cpp: n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / n_seq_max)
+    if [[ "$INST_KV_UNIFIED" == "true" ]]; then
+        INST_TOTAL_CONTEXT="$INST_CONTEXT_PER_REQUEST"
+    else
+        INST_TOTAL_CONTEXT=$((INST_CONTEXT_PER_REQUEST * INST_PARALLEL_SLOTS))
+    fi
+}
+
+# Effective per-request window llama.cpp will actually produce, including its
+# 256-token padding. Used to prove the derivation round-trips.
+effective_ctx_per_request() {
+    local total="$1" slots="$2" unified="$3"
+    if [[ "$unified" == "true" ]]; then
+        printf '%s' "$total"
+        return
+    fi
+    local per=$((total / slots))
+    printf '%s' $(((per + 255) / 256 * 256))
 }
 
 # True if REMOTE_HOST is this machine (no SSH needed)
@@ -185,7 +231,6 @@ _no_auth() {
     echo "Set SSH_KEY or SSH_PASS in .env" >&2
 }
 
-# Test SSH connection
 test_ssh() {
     case "$SSH_AUTH" in
         local) return 0 ;;
@@ -194,7 +239,6 @@ test_ssh() {
     esac
 }
 
-# Execute command on remote server
 remote_exec() {
     case "$SSH_AUTH" in
         local) bash -c "$*"; return ;;
@@ -203,7 +247,9 @@ remote_exec() {
     esac
 }
 
-# Execute command with sudo on remote server
+# Single-quote a string for safe interpolation into a remote shell
+_shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
 remote_exec_sudo() {
     if [[ "$SSH_AUTH" == "none" ]]; then
         _no_auth
@@ -216,21 +262,34 @@ remote_exec_sudo() {
             sudo bash -c "$*"
         fi
     elif [[ "$SSH_AUTH" == "password" ]]; then
-        _ssh_run "$REMOTE_USER@$REMOTE_HOST" "printf '%s\n' '$SSH_PASS' | sudo -S bash -c $(_shq "$*")"
+        _ssh_run "$REMOTE_USER@$REMOTE_HOST" "printf '%s\n' $(_shq "$SSH_PASS") | sudo -S bash -c $(_shq "$*")"
     else
         _ssh_run "$REMOTE_USER@$REMOTE_HOST" "sudo bash -c $(_shq "$*")"
     fi
 }
 
-# Single-quote a string for safe interpolation into a remote shell
-_shq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+# Write stdin to a privileged path on the target.
+# remote_exec_sudo consumes stdin to feed `sudo -S` the password, so content
+# must never be piped through it — it arrives empty. Stage via a temp file.
+remote_write_sudo() {
+    local dest="$1" mode="${2:-644}" tmp owner
+    tmp="/tmp/.llama-deploy.$$.${RANDOM}"
 
-# Read a key from the remote /etc/llama-server.conf.
+    remote_exec "cat > $tmp" || return 1
+    owner=$(remote_exec "stat -c '%U:%G' $dest 2>/dev/null" || echo "")
+    if [[ -n "$owner" ]]; then
+        remote_exec_sudo "install -m $mode -o ${owner%%:*} -g ${owner##*:} $tmp $dest && rm -f $tmp"
+    else
+        remote_exec_sudo "install -m $mode $tmp $dest && rm -f $tmp"
+    fi
+}
+
+# Read a key from an instance conf on the target.
 # `grep | cut || echo default` can never work: the pipeline exits with cut's
 # status, which is always 0. Check for emptiness explicitly instead.
 remote_conf_value() {
-    local key="$1" default="${2:-}" value=""
-    value=$(remote_exec "grep '^$key=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2-" 2>/dev/null) || value=""
+    local file="$1" key="$2" default="${3:-}" value=""
+    value=$(remote_exec "grep '^$key=' $file 2>/dev/null | cut -d= -f2-" 2>/dev/null) || value=""
     value="${value%$'\r'}"
     if [[ -z "$value" ]]; then
         printf '%s' "$default"
@@ -239,14 +298,14 @@ remote_conf_value() {
     fi
 }
 
-# Pretty print configuration
 print_config() {
     echo -e "${YELLOW}Target:${NC} $REMOTE_USER@$REMOTE_HOST ($RUNTIME_ENGINE/$RUNTIME_GPU)"
-    echo -e "${YELLOW}Context:${NC} $CONTEXT_PER_REQUEST per request × $PARALLEL_SLOTS slots = $TOTAL_CONTEXT total"
-    echo -e "${YELLOW}KV cache:${NC} $CACHE_TYPE_K/$CACHE_TYPE_V, unified=$KV_UNIFIED"
-    echo -e "${YELLOW}Batching:${NC} $BATCH_SIZE logical / $UBATCH_SIZE physical"
-    echo -e "${YELLOW}Threading:${NC} $THREADS_GEN gen / $THREADS_BATCH batch / $THREADS_HTTP HTTP"
-    echo -e "${YELLOW}Caching:${NC} $CACHE_REUSE token threshold"
-    echo -e "${YELLOW}Flash attn:${NC} $FLASH_ATTN"
-    echo -e "${YELLOW}Draft model:${NC} ${DRAFT_MODEL:-none} (max $DRAFT_MAX tokens)"
+    echo -e "${YELLOW}Instances:${NC} ${#INSTANCE_NAMES[@]} in $INSTANCES_DIR"
+    local n
+    for n in "${INSTANCE_NAMES[@]}"; do
+        load_instance "$n" || continue
+        printf '  %-14s :%s  %6s/req x %-3s slots = -c %-8s  KV %-5s fa=%s\n' \
+            "$n" "$INST_PORT" "$INST_CONTEXT_PER_REQUEST" "$INST_PARALLEL_SLOTS" \
+            "$INST_TOTAL_CONTEXT" "$INST_CACHE_TYPE_K" "$INST_FLASH_ATTN"
+    done
 }

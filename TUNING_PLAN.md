@@ -1,5 +1,19 @@
 # LLM Server Performance Tuning & Stress Testing Plan
 
+> **SUPERSEDED — 2026-08-08.** Kept for the hardware analysis and reasoning only.
+>
+> Do not follow the steps below. Several were overtaken by the context-window work:
+> - `scripts/stress-test.sh`, `scripts/diagnose-utilization.sh` and
+>   `scripts/benchmark-profiles/` were never built. `make benchmark` now covers this
+>   with decode/prefill scenarios and a committed baseline.
+> - Its central recommendation — raise `parallel_slots` to 12-16 — is what produced
+>   the 2816-token window, because it treated slots and context as independent.
+>   See `specs/context-window-deploy.md`.
+> - The single-instance model it assumes no longer matches the target.
+>
+> Current architecture, tuning, and perf baseline: `specs/context-window-deploy.md`.
+
+
 ## Context
 
 The automated deployment framework successfully deployed optimization settings (8 parallel slots, 12 gen threads, 8 batch threads, 6 HTTP threads) and the server is running stably. However, during the k6 benchmark (1-8 concurrent users over 2m21s), CPU utilization remains very low - only Core 6 at 32%, with most other cores at 0-1%.

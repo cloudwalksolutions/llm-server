@@ -8,10 +8,12 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 BENCH_LABEL="${BENCH_LABEL:-current}"
 BENCH_OUT="${BENCH_OUT:-bench}"
+# Which instance to load. Its slot count sets the VU ceiling.
+BENCH_INSTANCE="${BENCH_INSTANCE:-qwen3-14b}"
 
 load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
+load_instance "$BENCH_INSTANCE" || exit 1
 
-# Prefer the public hostname when we have one; the k6 client is remote.
 if [[ -n "${LLM_ENDPOINT:-}" ]]; then
     : # explicit override wins
 elif [[ -n "${LLM_HOST:-}" ]]; then
@@ -24,17 +26,19 @@ command -v k6 >/dev/null 2>&1 || { echo "k6 not installed" >&2; exit 1; }
 mkdir -p "$BENCH_OUT"   # handleSummary will not create directories
 
 export LLM_ENDPOINT LLAMA_API_KEY BENCH_LABEL BENCH_OUT
-export LLM_CONTEXT_PER_REQUEST="$CONTEXT_PER_REQUEST"
-export LLM_PARALLEL_SLOTS="$PARALLEL_SLOTS"
-export LLM_TOTAL_CONTEXT="$TOTAL_CONTEXT"
-export BENCH_MAX_VUS="${BENCH_MAX_VUS:-$((PARALLEL_SLOTS * 2))}"
+export LLM_MODEL="$BENCH_INSTANCE"
+export LLM_CONTEXT_PER_REQUEST="$INST_CONTEXT_PER_REQUEST"
+export LLM_PARALLEL_SLOTS="$INST_PARALLEL_SLOTS"
+export LLM_TOTAL_CONTEXT="$INST_TOTAL_CONTEXT"
+export BENCH_MAX_VUS="${BENCH_MAX_VUS:-$INST_PARALLEL_SLOTS}"
 
 echo ""
 echo "🚀 LLM Server Load Test (k6)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📅 $(date +"%Y-%m-%d %H:%M:%S")"
 echo "🌐 Endpoint: ${LLM_ENDPOINT}"
-echo "🧠 Context:  ${CONTEXT_PER_REQUEST}/request × ${PARALLEL_SLOTS} slots"
+echo "🤖 Instance: ${BENCH_INSTANCE}"
+echo "🧠 Context:  ${INST_CONTEXT_PER_REQUEST}/request × ${INST_PARALLEL_SLOTS} slots"
 echo "👥 Max VUs:  ${BENCH_MAX_VUS}"
 echo "📊 decode-heavy (control) then prefill-heavy (the shape context affects)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

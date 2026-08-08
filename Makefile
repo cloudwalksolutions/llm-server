@@ -1,6 +1,6 @@
-# Load environment variables from .env
--include .env
-export
+# .env is NOT included here on purpose. Make does not strip quotes, so
+# LLM_HOST='host' would be exported with the quotes still attached and end up
+# in URLs as https://'host'. Every script sources .env itself.
 
 .PHONY: help
 help:
@@ -103,7 +103,7 @@ config:
 .PHONY: ssh
 ssh:
 	@echo "SSH into LLM node..."
-	@sshpass -p "$(SSH_PASS)" ssh -o StrictHostKeyChecking=no $(REMOTE_USER)@$(REMOTE_HOST) -L 9090:localhost:9090
+	@./scripts/server-utils.sh ssh_in
 
 .PHONY: lint
 lint:
@@ -138,8 +138,10 @@ benchmark:
 
 .PHONY: benchmark-accept
 benchmark-accept:
-	@cp bench/current.json bench/baseline.json
-	@echo "Baseline updated from bench/current.json. Commit it to record the trade."
+	@src=bench/$${BENCH_LABEL:-current}.json; \
+	 [ -f "$$src" ] || { echo "no benchmark run found at $$src"; exit 1; }; \
+	 [ "$$src" = bench/baseline.json ] || cp "$$src" bench/baseline.json; \
+	 echo "Baseline updated from $$src. Commit it to record the trade."
 
 .PHONY: list-models
 list-models:

@@ -2,12 +2,14 @@
 remote:
   host: 10.0.0.10
   user: testuser
+
 runtime:
   engine: docker
   gpu: nvidia
-llama:
-  context_per_request: 8192
-  parallel_slots: 2
+  instances_dir: /opt/llm/instances
+  router_map: /etc/llama-router/models.json
+
+defaults:
   kv_unified: false
   batch_size: 1024
   ubatch_size: 256
@@ -15,8 +17,18 @@ llama:
   threads_batch: 8
   threads_http: 4
   cache_reuse: 256
-  cache_type_k: q8_0
-  cache_type_v: q8_0
-  flash_attn: true
+  cache_type_k: f16
+  cache_type_v: f16
+  flash_attn: false
   draft_model: ""
   draft_max: 16
+  container_image: example.invalid/llama:cuda
+
+instances:
+  # kv_unified: true means -c is NOT divided across slots
+  shared:
+    port: 8081
+    model_file: Model-C.gguf
+    context_per_request: 8192
+    parallel_slots: 2
+    kv_unified: true

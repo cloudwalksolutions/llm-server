@@ -70,56 +70,52 @@ test_completion_reports_model() {
 
 # ── TEST 3 ────────────────────────────────────────────────────────────────────
 test_active_model_matches_config() {
-    echo "TEST: API .model matches remote /etc/llama-server.conf MODEL_FILE"
-
-    result=$(curl -s --max-time 60 "$ENDPOINT/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
-        -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":5}')
-    api_model=$(echo "$result" | jq -r '.model // ""' 2>/dev/null)
-
-    if [[ -z "$api_model" ]]; then
-        echo -e "${RED}FAIL${NC}: .model field missing from API response"
-        echo "$result" | jq . 2>/dev/null || echo "$result"
-        exit 1
-    fi
+    echo "TEST: each instance's API model name is served by its own config"
 
     source scripts/lib/common.sh
     load_config || { echo -e "${RED}FAIL${NC}: Cannot load config"; exit 1; }
-    conf_model=$(remote_exec "grep '^MODEL_FILE=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "")
 
-    if [[ -z "$conf_model" ]]; then
-        echo -e "${RED}FAIL${NC}: Cannot read MODEL_FILE from remote config"
-        exit 1
-    fi
+    for name in "${INSTANCE_NAMES[@]}"; do
+        load_instance "$name" || { echo -e "${RED}FAIL${NC}: bad config for $name"; exit 1; }
 
-    conf_basename=$(basename "$conf_model")
-    if [[ "$api_model" != *"$conf_basename"* ]]; then
-        echo -e "${RED}FAIL${NC}: API model '$api_model' != config '$conf_basename'"
-        exit 1
-    fi
-    echo -e "${GREEN}PASS${NC}: API model '$api_model' matches config '$conf_basename'"
+        result=$(curl -s --max-time 90 "$ENDPOINT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            ${AUTH_HEADER[@]+"${AUTH_HEADER[@]}"} \
+            -d "{\"model\":\"$name\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":5}")
+        api_model=$(echo "$result" | jq -r '.model // ""' 2>/dev/null)
+
+        if [[ "$api_model" != "$name" ]]; then
+            echo -e "${RED}FAIL${NC}: asked for '$name', server answered as '$api_model'"
+            exit 1
+        fi
+
+        conf_model=$(remote_conf_value "$INSTANCES_DIR/$name.conf" MODEL_FILE)
+        if [[ "$conf_model" != "$INST_MODEL_FILE" ]]; then
+            echo -e "${RED}FAIL${NC}: $name deployed MODEL_FILE '$conf_model' != config '$INST_MODEL_FILE'"
+            exit 1
+        fi
+        echo -e "  ${GREEN}ok${NC} $name -> $conf_model"
+    done
+    echo -e "${GREEN}PASS${NC}: every instance answers as itself and matches its deployed config"
 }
 
 # ── TEST 4 ────────────────────────────────────────────────────────────────────
 test_model_file_exists_on_remote() {
-    echo "TEST: Active MODEL_FILE exists at /opt/llm/models/ on remote"
+    echo "TEST: every instance's model file exists on the target"
 
     source scripts/lib/common.sh
     load_config || { echo -e "${RED}FAIL${NC}: Cannot load config"; exit 1; }
-    conf_model=$(remote_exec "grep '^MODEL_FILE=' /etc/llama-server.conf 2>/dev/null | cut -d= -f2" || echo "")
 
-    if [[ -z "$conf_model" ]]; then
-        echo -e "${RED}FAIL${NC}: Cannot read MODEL_FILE from remote config"
-        exit 1
-    fi
-
-    if ! remote_exec "test -f '/opt/llm/models/$conf_model'"; then
-        echo -e "${RED}FAIL${NC}: /opt/llm/models/$conf_model not found on remote"
-        exit 1
-    fi
-    SIZE=$(remote_exec "du -h '/opt/llm/models/$conf_model' | cut -f1")
-    echo -e "${GREEN}PASS${NC}: /opt/llm/models/$conf_model exists ($SIZE)"
+    for name in "${INSTANCE_NAMES[@]}"; do
+        load_instance "$name" || { echo -e "${RED}FAIL${NC}: bad config for $name"; exit 1; }
+        if ! remote_exec "test -f '/opt/llm/models/$INST_MODEL_FILE'"; then
+            echo -e "${RED}FAIL${NC}: /opt/llm/models/$INST_MODEL_FILE missing (instance $name)"
+            exit 1
+        fi
+        size=$(remote_exec "du -h '/opt/llm/models/$INST_MODEL_FILE' | cut -f1")
+        echo -e "  ${GREEN}ok${NC} $name -> $INST_MODEL_FILE ($size)"
+    done
+    echo -e "${GREEN}PASS${NC}: all instance model files present"
 }
 
 # ── TEST 5 ────────────────────────────────────────────────────────────────────
