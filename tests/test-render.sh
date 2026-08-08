@@ -149,6 +149,89 @@ test_amd_and_nvidia_units_differ() {
     pass "AMD uses podman+kfd, NVIDIA uses docker+gpus"
 }
 
+test_entrypoint_arg_is_engine_specific() {
+    echo "TEST: 'llama-server' argv element only on the podman/AMD image"
+    local amd nvidia
+    amd=$(render amd unit)
+    nvidia=$(render nvidia unit)
+
+    # The AMD toolbox image entrypoint is a shell, so the binary must be named.
+    if ! grep -qE '^\s+llama-server \\$' <<<"$amd"; then
+        fail "amd unit is missing the 'llama-server' argv element"
+        return
+    fi
+    # The ggml CUDA image entrypoint IS llama-server; naming it corrupts argv.
+    if grep -qE '^\s+llama-server \\$' <<<"$nvidia"; then
+        fail "nvidia unit must not name 'llama-server' — the image entrypoint already is"
+        return
+    fi
+    pass "podman unit names llama-server, docker unit does not"
+}
+
+test_flash_attn_flag() {
+    echo "TEST: -fa on appears only when flash_attn is true"
+    local off on
+    off=$(render amd unit)      # flash_attn: false
+    on=$(render nvidia unit)    # flash_attn: true
+
+    if grep -q -- '-fa on' <<<"$off"; then
+        fail "flash_attn:false still emitted -fa on"
+        return
+    fi
+    if ! grep -q -- '-fa on' <<<"$on"; then
+        fail "flash_attn:true did not emit -fa on"
+        return
+    fi
+    pass "flash_attn drives the -fa flag"
+}
+
+test_draft_model_flags() {
+    echo "TEST: speculative decoding flags appear only with a draft model"
+    local none with cfg
+    none=$(render amd unit)
+    if grep -q -- '-md ' <<<"$none"; then
+        fail "empty draft_model still emitted -md"
+        return
+    fi
+
+    cfg=$(mktemp --suffix=.yaml)
+    mutate '.llama.draft_model' '"Qwen3-1.5B-Q4_K_M.gguf"' "$cfg"
+    with=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render-unit 2>&1)
+    rm -f "$cfg"
+
+    local f
+    for f in '-md /models/Qwen3-1.5B-Q4_K_M.gguf' '--draft-max 16' '-ngld 999'; do
+        if ! grep -q -- "$f" <<<"$with"; then
+            fail "draft model set but '$f' missing"
+            return
+        fi
+    done
+    pass "draft_model drives -md/--draft-max/-ngld"
+}
+
+test_rejects_quantized_kv_without_flash_attn() {
+    echo "TEST: quantized V cache without flash attention is rejected"
+    local cfg out rc
+    cfg=$(mktemp --suffix=.yaml)
+    # amd fixture is flash_attn:false; make the cache quantized
+    yq '.llama.cache_type_k = "q8_0" | .llama.cache_type_v = "q8_0"' \
+        "$FIXTURES/amd.yaml" > "$cfg"
+    out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render-conf 2>&1)
+    rc=$?
+    rm -f "$cfg"
+
+    if ((rc == 0)); then
+        fail "q8_0 KV with flash_attn:false was accepted"
+        echo "  llama.cpp force-enables FA here, silently defeating flash_attn:false"
+        return
+    fi
+    if ! grep -qi 'flash' <<<"$out"; then
+        fail "rejection message does not explain the flash attention requirement"
+        return
+    fi
+    pass "quantized V + flash_attn:false rejected"
+}
+
 test_units_are_valid_systemd() {
     echo "TEST: rendered units pass systemd-analyze verify"
     if ! command -v systemd-analyze >/dev/null 2>&1; then
@@ -261,6 +344,10 @@ else
              test_unit_emits_kv_unified_flag \
              test_per_request_meets_floor \
              test_amd_and_nvidia_units_differ \
+             test_entrypoint_arg_is_engine_specific \
+             test_flash_attn_flag \
+             test_draft_model_flags \
+             test_rejects_quantized_kv_without_flash_attn \
              test_units_are_valid_systemd \
              test_rejects_bad_config \
              test_rejects_missing_context_key \

@@ -1,5 +1,6 @@
 # llama-server Configuration
-# Copy this file to config/llama.yaml and customize for your setup
+# Copy this file to config/llama.yaml and customize for your setup.
+# config/llama.yaml is gitignored, so this file is the record of the schema.
 
 # Remote server connection (password/key set in .env file)
 remote:
@@ -7,47 +8,68 @@ remote:
   user: walkerobrien
 
 # Container runtime and GPU vendor of the TARGET machine.
-# Deploy refuses to run if these don't match what's actually installed there —
-# an AMD/podman unit on an NVIDIA/docker host produces a service that cannot start.
+# Deploy refuses to run if these don't match what's installed there — an
+# AMD/podman unit on an NVIDIA/docker host produces a service that cannot start.
 runtime:
   engine: podman       # podman | docker
   gpu: amd             # amd | nvidia
 
-# llama-server performance parameters
 llama:
   # Context window a SINGLE REQUEST gets. This is the number clients care about
-  # and the one that shows up as n_ctx in errors and /props.
+  # and the one that appears as n_ctx in errors and /props.
   #
-  # llama.cpp's -c flag is a TOTAL that gets divided across slots:
+  # llama.cpp's -c is a TOTAL that gets divided across slots:
   #   n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / parallel_slots)
   # Deploy derives -c for you, so set the number you actually want.
   context_per_request: 16384
 
   # Concurrent request slots. With kv_unified: false each slot gets its own
-  # dedicated window, so total KV memory scales with slots × context_per_request.
-  parallel_slots: 4
+  # dedicated window, so total KV = parallel_slots × context_per_request.
+  #
+  # NOTE: On AMD APU, Vulkan GPU compute shows as D-state processes in load
+  # average. Load avg of 60+ during inference is EXPECTED — GPU work, not CPU
+  # overload.
+  parallel_slots: 16
 
   # false = dedicated per-slot windows (predictable, more memory)
   # true  = one shared pool any request may use (cheaper, slots contend)
   kv_unified: false
 
-  # Batching: batch_size is logical, ubatch_size physical. ubatch <= batch.
+  # batch_size is logical, ubatch_size physical. ubatch <= batch.
+  # With flash_attn: false the KQ tensor is materialized and scales with
+  # n_ctx × n_ubatch × n_heads — a large ubatch gets expensive at large context.
   batch_size: 2048
   ubatch_size: 512
 
-  # Threading. gen/batch don't run simultaneously so both can be high.
-  threads_gen: 12
-  threads_batch: 8
-  threads_http: 6
+  # threads_gen should equal physical core count — hyperthreading hurts LLM
+  # inference. batch/http are fine oversubscribed.
+  threads_gen: 16
+  threads_batch: 12
+  threads_http: 10
 
   # Prompt cache reuse threshold. Lower = more aggressive caching.
   cache_reuse: 256
 
-  # KV cache quantization. f16 is the safe default; q8_0 roughly halves KV
-  # memory for ~0.05% perplexity. The two MUST match — asymmetric types fall
-  # back to CPU attention silently and run 25-45x slower.
+  # KV cache quantization. The two MUST match — asymmetric types fall back to
+  # CPU attention silently and run 25-45x slower.
+  #   f16:  full precision, 160 MiB per 1024 tokens on a 40-layer model
+  #   q8_0: ~half the memory, <0.1% quality loss — but REQUIRES flash_attn: true
+  #   q4_0: quarter memory, ~50x the perplexity damage of q8_0 — avoid
   cache_type_k: f16
   cache_type_v: f16
+
+  # Flash attention — DISABLE on the AMD Vulkan backend. There is no GPU FA
+  # kernel there, so it falls back to CPU (~50% perf drop). Enable on ROCm/CUDA.
+  # A quantized cache_type_v forces this on regardless, which is why
+  # load_config rejects that combination rather than letting it pass silently.
+  flash_attn: false
+
+  # Speculative decoding — requires a small draft model from the same family
+  # (~1.8-2.5x speedup). Empty string disables it.
+  # Download with: make add-model REPO=Qwen/Qwen3-1.5B-GGUF MODEL=Qwen3-1.5B-Q4_K_M.gguf
+  # Note: a quantized KV cache can collapse draft acceptance; prefer f16 here.
+  draft_model: ""
+  draft_max: 16
 
 # System resource limits (usually don't need to change)
 resources:
@@ -56,6 +78,6 @@ resources:
 
 # Benchmarking configuration
 benchmark:
-  concurrent_requests: 4    # Match parallel_slots for testing
+  concurrent_requests: 16   # Match parallel_slots for testing
   max_tokens: 100
   timeout: 120

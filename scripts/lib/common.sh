@@ -64,6 +64,12 @@ load_config() {
     CACHE_REUSE=$(yq '.llama.cache_reuse' "$config_file")
     CACHE_TYPE_K=$(yq '.llama.cache_type_k' "$config_file")
     CACHE_TYPE_V=$(yq '.llama.cache_type_v' "$config_file")
+    FLASH_ATTN=$(yq '.llama.flash_attn' "$config_file")
+    DRAFT_MAX=$(yq '.llama.draft_max' "$config_file")
+    # yq renders an empty string as '""'; normalise both that and "null" away
+    DRAFT_MODEL=$(yq '.llama.draft_model' "$config_file")
+    DRAFT_MODEL="${DRAFT_MODEL//\"/}"
+    [[ "$DRAFT_MODEL" == "null" ]] && DRAFT_MODEL=""
 
     # The old key meant a TOTAL that llama.cpp silently divided by the slot
     # count. Refuse to guess which one the user meant.
@@ -86,7 +92,9 @@ load_config() {
     _require_int "llama.threads_batch" "$THREADS_BATCH" || return 1
     _require_int "llama.threads_http" "$THREADS_HTTP" || return 1
     _require_int "llama.cache_reuse" "$CACHE_REUSE" || return 1
+    _require_int "llama.draft_max" "$DRAFT_MAX" || return 1
     _require_enum "llama.kv_unified" "$KV_UNIFIED" true false || return 1
+    _require_enum "llama.flash_attn" "$FLASH_ATTN" true false || return 1
     _require_enum "runtime.engine" "$RUNTIME_ENGINE" podman docker || return 1
     _require_enum "runtime.gpu" "$RUNTIME_GPU" amd nvidia || return 1
 
@@ -98,6 +106,23 @@ load_config() {
     if [[ "$CACHE_TYPE_K" != "$CACHE_TYPE_V" ]]; then
         _cfg_err "cache_type_k ($CACHE_TYPE_K) must equal cache_type_v ($CACHE_TYPE_V)"
         return 1
+    fi
+
+    # llama.cpp refuses to create a context with a quantized V cache unless
+    # flash attention is on, and with no -fa flag it defaults to 'auto' and
+    # force-enables FA anyway. Either way flash_attn:false is not honoured.
+    if [[ "$FLASH_ATTN" == "false" && "$CACHE_TYPE_V" != "f16" && "$CACHE_TYPE_V" != "f32" && "$CACHE_TYPE_V" != "bf16" ]]; then
+        _cfg_err "cache_type_v ($CACHE_TYPE_V) is quantized, which requires flash_attn: true"
+        echo "  llama.cpp: 'quantized V cache was requested, but this requires Flash Attention'." >&2
+        echo "  Set cache_type_k/v to f16, or set flash_attn: true." >&2
+        return 1
+    fi
+
+    # Quantizing the target model's KV cache is reported to collapse draft
+    # acceptance, which negates the speedup. Warn rather than block.
+    if [[ -n "$DRAFT_MODEL" && "$CACHE_TYPE_K" != "f16" ]]; then
+        echo -e "${YELLOW}Warning:${NC} draft_model with a quantized KV cache ($CACHE_TYPE_K)" >&2
+        echo "  can collapse draft acceptance. Consider f16 while speculative decoding." >&2
     fi
 
     # llama.cpp: n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / n_seq_max)
@@ -131,6 +156,7 @@ load_config() {
     export THREADS_GEN THREADS_BATCH THREADS_HTTP
     export CACHE_REUSE CACHE_TYPE_K CACHE_TYPE_V
     export CONTEXT_PER_REQUEST KV_UNIFIED TOTAL_CONTEXT
+    export FLASH_ATTN DRAFT_MODEL DRAFT_MAX
 }
 
 # True if REMOTE_HOST is this machine (no SSH needed)
@@ -221,4 +247,6 @@ print_config() {
     echo -e "${YELLOW}Batching:${NC} $BATCH_SIZE logical / $UBATCH_SIZE physical"
     echo -e "${YELLOW}Threading:${NC} $THREADS_GEN gen / $THREADS_BATCH batch / $THREADS_HTTP HTTP"
     echo -e "${YELLOW}Caching:${NC} $CACHE_REUSE token threshold"
+    echo -e "${YELLOW}Flash attn:${NC} $FLASH_ATTN"
+    echo -e "${YELLOW}Draft model:${NC} ${DRAFT_MODEL:-none} (max $DRAFT_MAX tokens)"
 }

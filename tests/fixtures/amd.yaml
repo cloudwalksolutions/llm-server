@@ -2,11 +2,9 @@
 remote:
   host: 10.0.0.9
   user: testuser
-
 runtime:
   engine: podman
   gpu: amd
-
 llama:
   context_per_request: 16384
   parallel_slots: 4
@@ -19,3 +17,6 @@ llama:
   cache_reuse: 256
   cache_type_k: f16
   cache_type_v: f16
+  flash_attn: false
+  draft_model: ""
+  draft_max: 16

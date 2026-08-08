@@ -5,7 +5,11 @@ import { Trend, Counter, Rate } from 'k6/metrics';
 const ENDPOINT = __ENV.LLM_ENDPOINT || (__ENV.LLM_HOST ? `https://${__ENV.LLM_HOST}` : 'http://localhost:8080');
 const API_KEY = __ENV.LLAMA_API_KEY || '';
 const MODEL = __ENV.LLM_MODEL || '';
-const MAX_VUS = parseInt(__ENV.BENCH_MAX_VUS || '8', 10);
+// Defaults to parallel_slots (exported by benchmark.sh) so the load actually
+// matches the server's concurrency instead of a hardcoded number.
+const MAX_VUS = parseInt(__ENV.BENCH_MAX_VUS || '16', 10);
+const HALF_VUS = Math.max(1, Math.floor(MAX_VUS / 2));
+const MAX_TOKENS = parseInt(__ENV.BENCH_MAX_TOKENS || '100', 10);
 const OUT_DIR = __ENV.BENCH_OUT || 'bench';
 const LABEL = __ENV.BENCH_LABEL || 'current';
 
@@ -37,9 +41,12 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 1,
       stages: [
-        { duration: '30s', target: Math.max(1, Math.floor(MAX_VUS / 2)) },
+        { duration: '30s', target: HALF_VUS },
         { duration: '1m', target: MAX_VUS },
-        { duration: '30s', target: Math.max(1, Math.floor(MAX_VUS / 2)) },
+        // Sustained plateau: catches thermal throttling and memory growth that
+        // a short ramp misses.
+        { duration: '3m', target: MAX_VUS },
+        { duration: '30s', target: HALF_VUS },
         { duration: '10s', target: 1 },
       ],
       startTime: '20s',
@@ -51,11 +58,11 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 1,
       stages: [
-        { duration: '30s', target: Math.max(1, Math.floor(MAX_VUS / 2)) },
+        { duration: '30s', target: HALF_VUS },
         { duration: '1m', target: MAX_VUS },
         { duration: '30s', target: 1 },
       ],
-      startTime: '2m40s',
+      startTime: '5m40s',
       exec: 'prefillHeavy',
       tags: { phase: 'prefill' },
     },
@@ -115,17 +122,17 @@ function request(content, maxTokens) {
 }
 
 export default function () {
-  request('Count to 10 quickly.', 50);
+  request('Count to 10 quickly.', MAX_TOKENS);
   sleep(1);
 }
 
 export function decodeHeavy() {
-  request('Count to 10 quickly.', 50);
+  request('Count to 10 quickly.', MAX_TOKENS);
   sleep(1);
 }
 
 export function prefillHeavy() {
-  request(LONG_PROMPT, 50);
+  request(LONG_PROMPT, MAX_TOKENS);
   sleep(1);
 }
 

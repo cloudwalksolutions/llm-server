@@ -116,6 +116,28 @@ _kv_unified_flag() {
     [[ "$KV_UNIFIED" == "true" ]] && printf -- '--kv-unified' || printf -- '--no-kv-unified'
 }
 
+# Appended inline so an empty value never becomes a stray empty argv element.
+_fa_suffix() {
+    [[ "$FLASH_ATTN" == "true" ]] && printf -- ' -fa on'
+}
+
+_draft_suffix() {
+    [[ -n "$DRAFT_MODEL" ]] && \
+        printf -- ' -md /models/%s --draft-max %s -ngld 999' "$DRAFT_MODEL" "$DRAFT_MAX"
+}
+
+# The AMD toolbox image entrypoint is a shell, so the binary must be named.
+# The ggml CUDA image's entrypoint IS llama-server, so naming it corrupts argv.
+# Emitted together with the image line: a bare $(...) on its own line would
+# collapse to an empty line for docker and break systemd's line continuation.
+_image_and_entrypoint() {
+    if [[ "$RUNTIME_ENGINE" == "podman" ]]; then
+        printf '    ${CONTAINER_IMAGE} \\\n    llama-server \\'
+    else
+        printf '    ${CONTAINER_IMAGE} \\'
+    fi
+}
+
 render_unit() {
     local engine_bin="/usr/bin/$RUNTIME_ENGINE"
     cat <<EOF
@@ -136,10 +158,9 @@ $(_gpu_flags)
     -v /opt/llm/models:/models:ro \\
     -p \${LLAMA_PORT}:\${LLAMA_PORT} \\
     -e LLAMA_API_KEY=\${LLAMA_API_KEY} \\
-    \${CONTAINER_IMAGE} \\
+$(_image_and_entrypoint)
         --no-mmap \\
-        -ngl 999 \\
-        -fa on \\
+        -ngl 999$(_fa_suffix) \\
         -c \${CONTEXT_SIZE} \\
         -np \${PARALLEL_SLOTS} \\
         $(_kv_unified_flag) \\
@@ -152,7 +173,7 @@ $(_gpu_flags)
         -tb \${THREADS_BATCH} \\
         --threads-http \${THREADS_HTTP} \\
         --cache-type-k \${CACHE_TYPE_K} \\
-        --cache-type-v \${CACHE_TYPE_V} \\
+        --cache-type-v \${CACHE_TYPE_V}$(_draft_suffix) \\
         -m /models/\${MODEL_FILE} \\
         --host \${LLAMA_HOST} \\
         --port \${LLAMA_PORT} \\
@@ -353,5 +374,6 @@ trap - ERR
 
 echo -e "${GREEN}✓ Deployed${NC}"
 echo -e "  ${GREEN}$CONTEXT_PER_REQUEST${NC} tokens per request × $PARALLEL_SLOTS slots (-c $TOTAL_CONTEXT)"
+echo -e "  KV $CACHE_TYPE_K/$CACHE_TYPE_V, flash_attn=$FLASH_ATTN, draft=${DRAFT_MODEL:-none}"
 echo ""
 echo -e "Next: ${BLUE}make verify${NC} | ${BLUE}make test-context${NC} | ${BLUE}make benchmark${NC}"

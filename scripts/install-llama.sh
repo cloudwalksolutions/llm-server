@@ -61,15 +61,15 @@ get_actual_user() {
 # =============================================================================
 phase1_system_setup() {
     log_step "Phase 1: System update and kernel configuration"
-    
+
     log_info "Updating system packages..."
     dnf upgrade -y
-    
+
     log_info "Installing required packages..."
     dnf install -y podman python3 git curl wget jq byobu
-    
+
     log_info "Configuring kernel parameters for 128GB unified GPU memory..."
-    
+
     if grep -q "amdgpu.gttsize=131072" /proc/cmdline 2>/dev/null; then
         log_info "Kernel parameters already configured"
     else
@@ -77,11 +77,11 @@ phase1_system_setup() {
         log_warn "Kernel parameters updated - REBOOT REQUIRED"
         touch /tmp/reboot_required
     fi
-    
+
     mkdir -p "$MODELS_DIR"
     mkdir -p /opt/llm/bin
     chmod 755 "$MODELS_DIR" /opt/llm /opt/llm/bin
-    
+
     log_info "Phase 1 complete ✓"
 }
 
@@ -90,15 +90,15 @@ phase1_system_setup() {
 # =============================================================================
 phase2_user_setup() {
     log_step "Phase 2: User and group configuration"
-    
+
     get_actual_user
-    
+
     log_info "Adding $ACTUAL_USER to video and render groups..."
     usermod -aG video "$ACTUAL_USER"
     usermod -aG render "$ACTUAL_USER"
-    
+
     chown -R "$ACTUAL_USER:$ACTUAL_USER" /opt/llm
-    
+
     log_info "Phase 2 complete ✓"
 }
 
@@ -134,9 +134,9 @@ phase3_container_setup() {
 # =============================================================================
 phase4_model_download() {
     log_step "Phase 4: Downloading models"
-    
+
     get_actual_user
-    
+
     # Install hf CLI via official installer — puts binary in /usr/local/bin
     if ! command -v hf &> /dev/null; then
         log_info "Installing Hugging Face CLI..."
@@ -181,9 +181,9 @@ phase4_model_download() {
 
     # Clean up cache after downloads complete
     rm -rf "$MODELS_DIR/.cache"
-    
+
     chown -R "$ACTUAL_USER:$ACTUAL_USER" "$MODELS_DIR"
-    
+
     log_info "Phase 4 complete ✓"
     echo ""
     log_info "Downloaded models:"
@@ -197,9 +197,9 @@ phase4_model_download() {
 # =============================================================================
 phase5_service_setup() {
     log_step "Phase 5: Systemd service configuration"
-    
+
     get_actual_user
-    
+
     # Create model switcher script
     cat > /opt/llm/bin/llm-switch << 'EOF'
 #!/bin/bash
@@ -321,15 +321,15 @@ SyslogIdentifier=llama-server
 [Install]
 WantedBy=multi-user.target
 EOF
-    
+
     # Add llm tools to PATH
     cat > /etc/profile.d/llm-tools.sh << 'EOF'
 export PATH="/opt/llm/bin:$PATH"
 EOF
-    
+
     systemctl daemon-reload
     systemctl enable llama-server.service
-    
+
     log_info "Phase 5 complete ✓"
 }
 
@@ -338,7 +338,7 @@ EOF
 # =============================================================================
 phase6_network_setup() {
     log_step "Phase 6: Network configuration"
-    
+
     if systemctl is-active --quiet firewalld; then
         log_info "Opening port $LLAMA_PORT in firewall..."
         firewall-cmd --permanent --add-port="$LLAMA_PORT/tcp"
@@ -346,7 +346,7 @@ phase6_network_setup() {
     else
         log_warn "firewalld not running, skipping"
     fi
-    
+
     log_info "Phase 6 complete ✓"
 }
 
@@ -355,7 +355,7 @@ phase6_network_setup() {
 # =============================================================================
 phase7_utilities() {
     log_step "Phase 7: Installing utility scripts"
-    
+
     # Health check
     cat > /opt/llm/bin/llm-health << 'EOF'
 #!/bin/bash
@@ -372,7 +372,7 @@ else
 fi
 EOF
     chmod +x /opt/llm/bin/llm-health
-    
+
     # Status
     cat > /opt/llm/bin/llm-status << 'EOF'
 #!/bin/bash
@@ -402,14 +402,14 @@ echo ""
 echo "═══════════════════════════════════════════════════════"
 EOF
     chmod +x /opt/llm/bin/llm-status
-    
+
     # Logs
     cat > /opt/llm/bin/llm-logs << 'EOF'
 #!/bin/bash
 journalctl -u llama-server -f
 EOF
     chmod +x /opt/llm/bin/llm-logs
-    
+
     log_info "Phase 7 complete ✓"
 }
 
@@ -423,14 +423,14 @@ main() {
     echo "║  AMD Ryzen AI Max+ 395 (Strix Halo) - 128GB                   ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""
-    
+
     check_sudo
     get_actual_user
-    
+
     echo "User: $ACTUAL_USER"
     echo "Models directory: $MODELS_DIR"
     echo ""
-    
+
     phase1_system_setup
     echo ""
     phase2_user_setup
@@ -445,10 +445,10 @@ main() {
     echo ""
     phase7_utilities
     echo ""
-    
+
     # Get IP for display
     IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
-    
+
     echo ""
     echo "╔═══════════════════════════════════════════════════════════════╗"
     echo "║  Setup Complete!                                              ║"
