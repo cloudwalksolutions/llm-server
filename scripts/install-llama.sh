@@ -467,7 +467,8 @@ main() {
     echo ""
     TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests"
     echo "Test scripts:"
-    echo "  $TESTS_DIR/test-local.sh     Test server locally"
+    echo "  LLM_ENDPOINT=http://localhost:$LLAMA_PORT $TESTS_DIR/test-remote.sh localhost"
+    echo "                      Test this box directly"
     echo "  $TESTS_DIR/test-remote.sh    Test from anywhere (hostname as arg or auto-detected)"
     echo ""
     echo "Service control:"
@@ -600,7 +601,11 @@ main() {
     read -p "Run tests? (Y/n): " run_tests
     if [[ ! "$run_tests" =~ ^[Nn] ]]; then
         echo ""
-        "$TESTS_DIR/test-local.sh" || true
+        # Local first, against this box's own port. test-local.sh used to do this;
+        # it was removed because it duplicated test-remote.sh, was wired to no
+        # make target, and ended in an unconditional PASS that could not fail.
+        LLM_ENDPOINT="http://localhost:$LLAMA_PORT" \
+            "$TESTS_DIR/test-remote.sh" localhost "$LLAMA_API_KEY" || true
         echo ""
         if [[ -f /etc/cloudflared/config.yml ]]; then
             "$TESTS_DIR/test-remote.sh" || true

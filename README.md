@@ -33,8 +33,14 @@ client -> cloudflared -> nginx :8080 (njs router, /etc/llama-router/models.json)
                            `-> 127.0.0.1:8083  llama-server@<model-c>
 ```
 
-`llama-server@.service` is a template owned by the target. Each instance reads
-`/opt/llm/instances/<name>.conf` — those files are what `make deploy` owns and rewrites.
+`llama-server@.service` is rendered from `templates/llama-server@.service.in` and
+installed by `make deploy` — **that template is the argv**, so every llama-server flag is
+in git and reviewable. Each instance also reads `/opt/llm/instances/<name>.conf`, which
+deploy renders per model and systemd expands as `${VAR}` inside the unit.
+
+Because all instances share the template, changing it restarts all of them; `make
+deploy-dry` says so before you apply. The nginx njs router and its `models.json` remain
+target-owned and are not managed here.
 
 ## Setup
 
@@ -77,29 +83,38 @@ result wouldn't survive llama.cpp's rounding.
 ## Deploy
 
 ```bash
-make deploy-dry   # per-instance diff; names exactly which instances would restart
-make deploy       # writes changed confs, restarts only those, auto-rolls back on failure
-make verify       # asserts yaml == deployed conf == live process == /props
+make deploy-dry   # diffs the unit + each conf; names exactly what would restart
+make deploy       # writes what changed, restarts only that, auto-rolls back on failure
+make verify       # yaml == conf == live process == /props == /slots, + a real tool call
 ```
 
 Deploy preflights the target (runtime, GPU, instance files, router map agreement),
 preserves each instance's API key rather than rewriting it, reads back what it wrote
-before restarting anything, and touches only instances whose config actually changed.
+before restarting anything, and touches only what actually changed. It also refuses
+configs that would break the target rather than discovering it at restart time: an
+invalid KV cache type, a missing container image, two instances on one port, an instance
+name that would not survive interpolation, or a control character in any value.
 
 ## Testing
 
 ```bash
 make lint          # shellcheck
-make test-unit     # offline: validation, defaults/overrides, derived context, goldens
-make verify        # live: config vs deployed vs running process, all instances
+make test-unit     # offline: config refusal, derived context, defaults/overrides, goldens
+make verify        # live: config vs deployed vs process vs /slots, + a streamed tool call
+make test-drift    # asserts verify actually goes RED when the target drifts
 make test-context  # effective window, long prompts, tool-shaped turns, truncation
 make test          # API smoke test
 make test-models   # model selection
 make benchmark     # k6 load test, compared against bench/baseline.json
+make bench-agent   # streamed + tool-calling + multi-turn; gates on correctness
 ```
 
-`test-unit` needs nothing — no network, no SSH, no server. `verify` needs SSH. The rest
-need a reachable endpoint.
+`test-unit` needs nothing — no network, no SSH, no server. `verify`, `test-drift` and
+`bench-agent` need SSH. The rest need a reachable endpoint.
+
+`make test-context` reads the required window from `config/llama.yaml` for the instance
+under test, so it is correct for every instance rather than asserting one fixed number.
+Target a specific instance with `LLM_MODEL=<name>`.
 
 To test the origin directly and rule out CDN problems:
 
@@ -125,27 +140,65 @@ Accept a new baseline when a trade is deliberate:
 make benchmark-accept && git commit bench/baseline.json
 ```
 
-## Server management
+### Agent-workload benchmark
+
+`make benchmark` cannot see the things that actually break for an agent: it sends no
+`tools`, does not stream, and is single-turn. `make bench-agent` replays a recorded
+multi-turn tool-using session (`tests/fixtures/agent-session.json`) with streaming on,
+and **gates hard on correctness** — tool-argument JSON validity, schema conformance,
+`finish_reason`, that the answer arrives in more than one frame, and that warm turns
+actually reuse the prompt cache. Those are binary properties, so they cannot flake.
+Latency is recorded but advisory, as above.
+
+The replayed history is the *recorded* assistant/tool message rather than the model's live
+output, so the prompt prefix is identical every run and percentiles stay comparable.
+
+### Measuring, rather than assuming, what a setting costs
 
 ```bash
-make status      # status + metrics (slot context, queued requests, KV usage)
+make kv-study-plan   # disk/time budget and target headroom; changes nothing
+make kv-study        # measures KV quantization cost -> specs/kv-quant-study.md
+```
+
+Compares `f16` / `q8_0` / `q4_0` KV cache — plus the asymmetric arms that isolate whether
+K or V is the sensitive one — over two corpora, one prose and one built from real
+tool-calling turns, using `llama-perplexity --kl-divergence`. It reports tail KLD and
+top-1 token agreement rather than means, because a malformed tool call is a handful of
+tokens going wrong.
+
+## Server management
+
+Every command below covers all instances, or one with `INSTANCE=<name>`:
+
+```bash
+make status      # per instance: unit state, restarts, window, slots, metrics, flash-attn
 make logs        # recent logs           make logs-f    # live tail
 make start | stop | restart | enable | disable
-make config      # show the target's deployed config
-make ssh         # SSH in, metrics port-forwarded
+make config      # the target's deployed conf per instance (API key redacted)
+make ssh         # SSH in
 ```
+
+`make status` reads everything from the server rather than inferring it from config,
+including the *resolved* flash-attention state — `flash_attn: false` in the config does
+not mean it is off. There is no KV-cache-utilisation metric to report; llama.cpp removed
+it, so context pressure comes from the per-slot window plus the observed peak.
 
 ## Models
 
 ```bash
 make list-models
 make add-model REPO=org/repo MODEL=file.gguf
-make switch-model MODEL=file.gguf
+make switch-model MODEL=file.gguf INSTANCE=name
 ```
 
 ## Docs
 
 - `config/llama.example.yaml` — full config schema
+- `templates/llama-server@.service.in` — the actual llama-server argv
 - `specs/context-window-deploy.md` — architecture, deploy runbook, perf baseline,
   context-window sizing notes, and known issues
+- the consuming app's integration guide lives in that app's repo
+  (`apps/twofit-app/src/api/specs/llm-server.md`); the open items on our side are in
+  `specs/context-window-deploy.md`
+- `specs/kv-quant-study.md` — measured cost of KV quantization (generated by `make kv-study`)
 - `specs/ollama.md` — why the Ollama backend is installable but unmanaged

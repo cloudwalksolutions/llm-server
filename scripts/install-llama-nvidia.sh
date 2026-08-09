@@ -480,7 +480,9 @@ main() {
     echo ""
     TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests"
     echo "Test scripts:"
-    echo "  $TESTS_DIR/test-local.sh     Test server locally"
+    echo "  LLM_ENDPOINT=http://localhost:$LLAMA_PORT $TESTS_DIR/test-remote.sh localhost"
+    echo "                      Test this box directly"
+    echo "  $TESTS_DIR/test-remote.sh    Test from anywhere (hostname as arg)"
     echo ""
     echo "Service control:"
     echo "  sudo systemctl start llama-server"
@@ -569,7 +571,11 @@ main() {
     read -p "Run tests? (Y/n): " run_tests
     if [[ ! "$run_tests" =~ ^[Nn] ]]; then
         echo ""
-        "$TESTS_DIR/test-local.sh" || true
+        # test-local.sh was removed: it duplicated test-remote.sh, was wired to no
+        # make target, and ended in an unconditional PASS that could not fail.
+        # test-remote.sh honours LLM_ENDPOINT and fails when nothing streams.
+        LLM_ENDPOINT="http://localhost:$LLAMA_PORT" \
+            "$TESTS_DIR/test-remote.sh" localhost "$LLAMA_API_KEY" || true
     fi
 }
 

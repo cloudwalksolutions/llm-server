@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Deploy config/llama.yaml to the target's per-model llama-server instances.
 #
-# Owns /opt/llm/instances/<name>.conf, consumed by llama-server@<name>.service.
-# Restarts only instances whose config changed.
+# Owns two things on the target:
+#   <instances_dir>/<name>.conf   per-model settings, expanded by systemd as ${VAR}
+#   llama-server@.service         the unit, rendered from
+#                                 templates/llama-server@.service.in — i.e. the argv
+#
+# Restarts only instances whose conf changed — EXCEPT that all instances share the
+# unit template, so a change there restarts every one of them. --dry-run says which.
 #
 # Usage:
 #   ./scripts/deploy-llama.sh                 apply
 #   ./scripts/deploy-llama.sh --dry-run       diff what would change
 #   ./scripts/deploy-llama.sh --render NAME   print one instance conf
+#   ./scripts/deploy-llama.sh --render unit   print the rendered systemd unit
+#   ./scripts/deploy-llama.sh --check         validate config only, no network
 #
 # -E is required or the ERR trap won't fire inside functions.
 set -Eeuo pipefail
@@ -21,6 +28,7 @@ RENDER_ONE=""
 case "${1:-}" in
     --dry-run) MODE="dry-run" ;;
     --render)  MODE="render"; RENDER_ONE="${2:-}" ;;
+    --check)   MODE="check" ;;
     "")        MODE="apply" ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
 esac
@@ -57,8 +65,66 @@ CONTAINER_IMAGE=$INST_CONTAINER_IMAGE
 EOF
 }
 
+# ── Unit template renderer ────────────────────────────────────────────────────
+# The template is shared by every instance, so it is rendered once from
+# runtime/resources settings only — never from per-instance values. Anything
+# per-instance must go through the conf file above, which systemd expands as
+# ${VAR}, and those are deliberately left untouched here.
+UNIT_TEMPLATE="$SCRIPT_DIR/../templates/llama-server@.service.in"
+
+render_unit() {
+    [[ -f "$UNIT_TEMPLATE" ]] || {
+        echo -e "${RED}missing $UNIT_TEMPLATE${NC}" >&2; return 1; }
+
+    local engine_bin gpu_args server_cmd body
+    case "$RUNTIME_ENGINE" in
+        podman) engine_bin="/usr/bin/podman" ;;
+        docker) engine_bin="/usr/bin/docker" ;;
+    esac
+
+    # Kept as literal indented blocks with trailing continuations so the rendered
+    # ExecStart stays one shell command.
+    case "$RUNTIME_GPU" in
+        amd)
+            gpu_args='        --device /dev/kfd \
+        --device /dev/dri \
+        --group-add video \
+        --security-opt seccomp=unconfined \'
+            # The AMD toolbox images ship a shell with llama-server on PATH.
+            server_cmd="llama-server"
+            ;;
+        nvidia)
+            gpu_args='        --gpus all \'
+            # ggml-org's CUDA server image has llama-server as its ENTRYPOINT, so
+            # naming it again would be passed as a model argument.
+            server_cmd=""
+            ;;
+    esac
+
+    body=$(<"$UNIT_TEMPLATE")
+    body="${body//@ENGINE_BIN@/$engine_bin}"
+    body="${body//@GPU_ARGS@/$gpu_args}"
+    body="${body//@SERVER_CMD@/$server_cmd}"
+    body="${body//@INSTANCES_DIR@/$INSTANCES_DIR}"
+    body="${body//@MODELS_DIR@/$MODELS_DIR}"
+    body="${body//@LIMIT_NOFILE@/$RES_LIMIT_NOFILE}"
+    body="${body//@LIMIT_MEMLOCK@/$RES_LIMIT_MEMLOCK}"
+
+    # An unresolved placeholder would install a unit systemd cannot start.
+    if grep -q '@[A-Z_]\+@' <<<"$body"; then
+        echo -e "${RED}unresolved placeholders in the unit template:${NC}" >&2
+        grep -o '@[A-Z_]\+@' <<<"$body" | sort -u | sed 's/^/  /' >&2
+        return 1
+    fi
+    printf '%s\n' "$body"
+}
+
 if [[ "$MODE" == "render" ]]; then
     [[ -n "$RENDER_ONE" ]] || { echo "--render needs an instance name" >&2; exit 2; }
+    if [[ "$RENDER_ONE" == "--unit" || "$RENDER_ONE" == "unit" ]]; then
+        render_unit
+        exit 0
+    fi
     render_instance_conf "$RENDER_ONE" "${BASE_LLAMA_API_KEY:-<preserved-from-target>}"
     exit 0
 fi
@@ -77,6 +143,18 @@ check_derivation() {
     done
     ((bad == 0))
 }
+
+# Validate and stop. --render returns before check_derivation ever runs, so
+# without this the one invariant this script exists to enforce is unreachable
+# from an offline test.
+if [[ "$MODE" == "check" ]]; then
+    for name in "${INSTANCE_NAMES[@]}"; do
+        load_instance "$name" >/dev/null || exit 1
+    done
+    check_derivation || exit 1
+    echo -e "${GREEN}config OK${NC} — ${#INSTANCE_NAMES[@]} instances validated"
+    exit 0
+fi
 
 echo -e "${CYAN}[1/7]${NC} Config:"
 print_config
@@ -129,6 +207,21 @@ echo "  router map agrees with configured ports"
 echo -e "${CYAN}[5/7]${NC} Comparing against the target..."
 CHANGED=()
 declare -A RENDERED
+
+# The unit template first, because a change to it affects every instance.
+UNIT_CHANGED=0
+NEW_UNIT=$(render_unit) || { echo -e "${RED}could not render the unit${NC}" >&2; exit 1; }
+CUR_UNIT=$(remote_exec "cat $UNIT_PATH 2>/dev/null" || echo "")
+if [[ -z "$CUR_UNIT" ]]; then
+    echo -e "  ${YELLOW}NEW${NC}        $UNIT_PATH (not present on the target)"
+    UNIT_CHANGED=1
+elif [[ "$CUR_UNIT" == "$NEW_UNIT" ]]; then
+    echo -e "  ${GREEN}unchanged${NC}  $UNIT_PATH"
+else
+    UNIT_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $UNIT_PATH"
+    diff -u <(printf '%s\n' "$CUR_UNIT") <(printf '%s\n' "$NEW_UNIT") | sed 's/^/      /' || true
+fi
 for name in "${INSTANCE_NAMES[@]}"; do
     key=$(remote_conf_value "$INSTANCES_DIR/$name.conf" LLAMA_API_KEY)
     if [[ -z "$key" ]]; then
@@ -151,13 +244,29 @@ for name in "${INSTANCE_NAMES[@]}"; do
     fi
 done
 
-if ((${#CHANGED[@]} == 0)); then
+# CHANGED is what gets REWRITTEN; RESTART is what gets bounced. They differ
+# because every instance shares the unit template, so a template change restarts
+# instances whose own conf is untouched. Keeping them separate avoids rewriting
+# (and backing up) confs that are already correct.
+RESTART=("${CHANGED[@]}")
+if ((UNIT_CHANGED)); then
+    if ((${#CHANGED[@]} < ${#INSTANCE_NAMES[@]})); then
+        echo -e "\n  ${YELLOW}the unit template changed — every instance restarts,${NC}"
+        echo -e "  ${YELLOW}not just the ones whose own conf changed${NC}"
+    fi
+    RESTART=("${INSTANCE_NAMES[@]}")
+fi
+
+if ((${#RESTART[@]} == 0)); then
     echo -e "\n${GREEN}Nothing to do — target already matches config.${NC}"
     exit 0
 fi
 
 if [[ "$MODE" == "dry-run" ]]; then
-    echo -e "\n${YELLOW}DRY RUN — would restart: ${CHANGED[*]}${NC}"
+    echo ""
+    ((UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $UNIT_PATH + daemon-reload${NC}"
+    ((${#CHANGED[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would rewrite confs: ${CHANGED[*]}${NC}"
+    echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]}${NC}"
     echo -e "${YELLOW}Run 'make deploy' to apply${NC}"
     exit 0
 fi
@@ -196,7 +305,8 @@ run_rollback() {
         echo "  undo: ${ROLLBACK[i]}" >&2
         remote_exec_sudo "${ROLLBACK[i]}" || echo -e "  ${RED}rollback step failed${NC}" >&2
     done
-    for n in "${CHANGED[@]}"; do
+    for n in "${RESTART[@]:-}"; do
+        [[ -n "$n" ]] || continue
         remote_exec_sudo "systemctl restart llama-server@$n" || true
     done
     echo -e "${YELLOW}Rolled back. Verify with 'make verify'.${NC}" >&2
@@ -204,7 +314,33 @@ run_rollback() {
 }
 trap run_rollback ERR
 
-echo -e "${CYAN}[6/7]${NC} Writing configs for: ${CHANGED[*]}"
+if ((UNIT_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Installing $UNIT_PATH"
+    # Back up first only if there is something to back up; a fresh target has no
+    # unit, and restoring a nonexistent file on rollback would be worse than
+    # leaving the rendered one in place.
+    if [[ -n "$CUR_UNIT" ]]; then
+        remote_exec_sudo "cp $UNIT_PATH $UNIT_PATH.backup.$TIMESTAMP"
+        # daemon-reload is part of the undo, not a separate step: a restored unit
+        # that systemd has not re-read is not actually restored.
+        rb "cp $UNIT_PATH.backup.$TIMESTAMP $UNIT_PATH && systemctl daemon-reload"
+    fi
+
+    printf '%s\n' "$NEW_UNIT" | remote_write_sudo "$UNIT_PATH" 644
+
+    readback=$(remote_exec "cat $UNIT_PATH 2>/dev/null" || echo "")
+    if [[ "$readback" != "$NEW_UNIT" ]]; then
+        echo -e "${RED}the written unit does not match what was rendered${NC}" >&2
+        diff -u <(printf '%s\n' "$NEW_UNIT") <(printf '%s\n' "$readback") | head -20 >&2
+        false
+    fi
+    remote_exec_sudo "systemctl daemon-reload"
+    echo -e "  ${GREEN}written + verified + daemon-reload${NC}"
+fi
+
+if ((${#CHANGED[@]} > 0)); then
+    echo -e "${CYAN}[6/7]${NC} Writing configs for: ${CHANGED[*]}"
+fi
 for name in "${CHANGED[@]}"; do
     remote_exec_sudo "cp $INSTANCES_DIR/$name.conf $INSTANCES_DIR/$name.conf.backup.$TIMESTAMP"
     rb "cp $INSTANCES_DIR/$name.conf.backup.$TIMESTAMP $INSTANCES_DIR/$name.conf"
@@ -222,8 +358,8 @@ for name in "${CHANGED[@]}"; do
     echo -e "  ${GREEN}written + verified${NC}  $name"
 done
 
-echo -e "${CYAN}[7/7]${NC} Restarting changed instances (model load takes a minute)..."
-for name in "${CHANGED[@]}"; do
+echo -e "${CYAN}[7/7]${NC} Restarting ${#RESTART[@]} instance(s) (model load takes a minute)..."
+for name in "${RESTART[@]}"; do
     load_instance "$name"
     echo -n "  $name "
     remote_exec_sudo "systemctl restart llama-server@$name"
@@ -235,7 +371,7 @@ trap - ERR
 
 echo ""
 echo -e "${GREEN}✓ Deployed${NC}"
-for name in "${CHANGED[@]}"; do
+for name in "${RESTART[@]}"; do
     load_instance "$name"
     echo -e "  $name: ${GREEN}$INST_CONTEXT_PER_REQUEST${NC} tokens/request × $INST_PARALLEL_SLOTS slots (-c $INST_TOTAL_CONTEXT)"
 done

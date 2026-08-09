@@ -16,6 +16,9 @@
 # so an accepted perf trade shows up as a reviewable diff.
 bench/*.json
 !bench/baseline.json
+# Same reasoning for the agent-workload baseline: accepting a new one is a
+# deliberate trade, so it should show up as a reviewable diff.
+!bench/agent-baseline.json
 
 # Config backups pulled down from a target
 *.conf.backup.*

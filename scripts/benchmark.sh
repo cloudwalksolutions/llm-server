@@ -60,7 +60,23 @@ echo "Results: $BENCH_OUT/$BENCH_LABEL.json"
 if [[ -f "$BENCH_OUT/baseline.json" && "$BENCH_LABEL" != "baseline" ]]; then
     echo ""
     "$SCRIPT_DIR/compare-baseline.sh" "$BENCH_OUT/baseline.json" "$BENCH_OUT/$BENCH_LABEL.json"
-    exit $?
+    cmp_rc=$?
+    # An SLO breach outranks a baseline regression, and it is the more specific
+    # diagnosis: absolute thresholds were missed, not just "slower than last time".
+    # `exit $?` here used to discard k6's 99 entirely, so the exit code README
+    # documents was unreachable whenever a baseline existed — which is always.
+    if ((rc == 99)); then
+        echo ""
+        echo "Exiting 99 (k6 SLO breach) rather than $cmp_rc (baseline comparison)."
+        exit 99
+    fi
+    exit "$cmp_rc"
 fi
-echo "No baseline yet. Accept this run with: make benchmark-accept"
+if [[ "$BENCH_LABEL" == "baseline" ]]; then
+    # Reached by `BENCH_LABEL=baseline make benchmark`, i.e. deliberately
+    # (re)recording the baseline. Saying "no baseline yet" here was backwards.
+    echo "Recorded as the baseline. Commit $BENCH_OUT/baseline.json to record the trade."
+else
+    echo "No baseline yet. Accept this run with: make benchmark-accept"
+fi
 exit "$rc"

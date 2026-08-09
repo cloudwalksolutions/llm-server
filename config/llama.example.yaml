@@ -22,30 +22,79 @@ defaults:
   kv_unified: false
 
   # batch_size is logical, ubatch_size physical. ubatch <= batch.
-  # With flash_attn off the KQ tensor is materialized and grows with
-  # n_ctx x n_ubatch, so a big ubatch gets expensive at large context.
+  #
+  # A large ubatch is only expensive when flash attention is OFF, because the KQ
+  # tensor is then materialized and grows with n_ctx x n_ubatch. On this target
+  # flash attention resolves to ON for every instance (see flash_attn below), so
+  # that cost does not apply and ubatch_size: 2048 is what production runs.
+  # UNMEASURED: no benchmark here compares ubatch values. If you change it,
+  # record a `make benchmark` before/after rather than reasoning about it.
   batch_size: 2048
-  ubatch_size: 512
+  ubatch_size: 2048
 
-  # threads_gen should equal PHYSICAL core count; hyperthreading hurts
-  # inference. batch/http are fine oversubscribed.
+  # Convention here is threads_gen == physical core count (16 on this box, which
+  # has 16c/32t), with batch/http lower. UNMEASURED: "hyperthreading hurts
+  # inference" is widely repeated, is not tested anywhere in this repo, and a
+  # previous tuning doc argued the exact opposite (deliberate oversubscription to
+  # 20 threads). Nobody measured either position. Treat these as a working
+  # default, not a finding — and if you change them, record a benchmark.
   threads_gen: 16
   threads_batch: 12
   threads_http: 6
 
   cache_reuse: 256            # prompt cache reuse threshold, lower = more aggressive
 
-  # KV cache quantization. The two MUST match — asymmetric types fall back to
-  # CPU attention silently and run 25-45x slower.
-  #   f16:  full precision. 160 MiB per 1024 tokens on a 40-layer model.
-  #   q8_0: ~half the memory, <0.1% quality loss. Forces flash_attn on.
-  #   q4_0: quarter memory, ~50x the perplexity damage of q8_0. Avoid.
+  # KV cache quantization. The two MUST match; validation rejects a mismatch.
+  #
+  # Memory is DERIVED and exact. KV bytes per token =
+  #   2 x n_layers x n_kv_heads x head_dim x bytes_per_value
+  # For Qwen3-14B (40 layers, 8 KV heads, head_dim 128), per 1024 tokens of `-c`:
+  #   f16   160 MiB   (16.0 bits/value)
+  #   q8_0   85 MiB   ( 8.5 bits/value — 53% of f16)
+  #   q4_0   45 MiB   ( 4.5 bits/value — 28% of f16)
+  #
+  # Quality is MEASURED on this hardware — full method in specs/kv-quant-study.md,
+  # produced by `make kv-study`. Same GGUF in every arm, KV type the only variable,
+  # 131072 tokens per arm, over two corpora: prose (wikitext-2) and real
+  # tool-calling turns rendered through the server's own chat template.
+  #
+  # Versus f16, on the tool-calling corpus:
+  #   q8_0   mean KLD 0.0021   99.9% KLD 0.060   top-1 agreement 97.9%
+  #   q4_0   mean KLD 0.0433   99.9% KLD 2.313   top-1 agreement 92.5%
+  # So q4_0 costs ~20x the divergence of q8_0. q8_0 is the sane default; q4_0 is
+  # a real quality trade, not a free memory win.
+  #
+  # Three numbers that used to live here are WITHDRAWN as unmeasured:
+  #   "q8_0 = <0.1% quality loss" — the honest figure is 97.9% top-1 agreement,
+  #     i.e. ~2% of tokens change their top choice. Small, not <0.1%.
+  #   "q4_0 = ~50x the perplexity damage of q8_0" — measured at ~20x, not 50x.
+  #   "asymmetric types fall back to CPU attention, 25-45x slower" — upstream
+  #     attributes that figure to a CUDA build missing quantized-FA kernels, not to
+  #     asymmetry. Asymmetric IS several times slower here (measured, on the GPU),
+  #     which is one reason validation refuses it — but not 45x, and not via CPU.
+  #
+  # Also withdrawn: that q4_0 harms tool calling *specifically*. It does not —
+  # top-1 agreement is 0.70pp BETTER on tool-calling content than on prose at q4_0.
+  # What IS true is that the tail is amplified there (99.9% KLD 1.75x the prose
+  # figure at q4_0, vs 1.27x at q8_0), and a malformed tool call is a tail event.
   cache_type_k: q8_0
   cache_type_v: q8_0
 
-  # Disable on the AMD Vulkan backend — there is no GPU FA kernel there, so it
-  # falls back to CPU. Note a quantized cache_type_v forces this on regardless;
-  # deploy warns when the two settings contradict.
+  # This knob does NOT turn flash attention off. false only omits -fa, which
+  # leaves llama.cpp on its own default of `auto`.
+  #
+  # MEASURED on the target (journal, 2026-08-08, build b7966):
+  #   llama_context: flash_attn = auto
+  #   sched_reserve: Flash Attention was auto, set to enabled
+  # So flash attention is ENABLED on all three instances despite this saying
+  # false, and it runs on the GPU. An earlier version of this comment claimed
+  # the AMD Vulkan backend has no FA kernel and falls back to CPU; that is not
+  # what the target does, and the claim is withdrawn.
+  #
+  # A quantized cache_type_v REQUIRES flash attention — llama.cpp refuses to
+  # start with "V cache quantization requires flash_attn" if it resolves to off —
+  # so deploy warns when this says false alongside a quantized V cache.
+  # Check the resolved value with `make status` (flash-at), never from this line.
   flash_attn: false
 
   # Speculative decoding. Needs a small draft model of the same family.
@@ -96,7 +145,8 @@ resources:
   limit_nofile: 65535
   limit_memlock: infinity
 
-benchmark:
-  concurrent_requests: 8
-  max_tokens: 100
-  timeout: 120
+# There is deliberately no `benchmark:` block. Benchmark concurrency is derived
+# from the instance's parallel_slots (scripts/benchmark.sh), so a second number
+# here could only ever disagree with the server's real capacity — the previous
+# one said 4 while the benchmark ran 8 VUs. Output length comes from
+# BENCH_MAX_TOKENS. Nothing read this block.

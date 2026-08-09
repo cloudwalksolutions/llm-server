@@ -32,8 +32,11 @@ if (($(printf '%.0f' "$iters") < MIN_ITER)); then
     exit 3
 fi
 
-# Comparing across different server configs is meaningless.
-for k in contextPerRequest parallelSlots model; do
+# Comparing across different server configs is meaningless. endpointKind belongs
+# here as much as the others: .env sets LLM_HOST, so a bare `make benchmark` runs
+# against the public CDN path while the committed baseline was recorded at the
+# origin — a comparison that was silently mixing two transports.
+for k in contextPerRequest parallelSlots model endpointKind; do
     b=$(jq -r ".env.$k // \"\"" "$BASE")
     c=$(jq -r ".env.$k // \"\"" "$CUR")
     if [[ -n "$b" && "$b" != "$c" ]]; then

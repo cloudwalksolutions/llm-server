@@ -12,10 +12,22 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Source server config for API key fallback (if on the server)
-if [[ -f /etc/llama-server.conf ]]; then
-    source /etc/llama-server.conf
-fi
+# NO /etc/llama-server.conf fallback.
+#
+# This used to `source /etc/llama-server.conf` here, AFTER .env, as an
+# "API key fallback if on the server". Two things are wrong with that:
+#
+#   1. That file belongs to the old single-instance layout. A migrated target
+#      runs llama-server@<name>.service with a conf per model under
+#      <instances_dir>, and does not have it (see CLAUDE.md).
+#   2. Sourcing it last let a stale file silently OVERRIDE a correct key. That
+#      is not hypothetical — a leftover copy on a dev laptop made this suite
+#      401 against a perfectly healthy server, and it went unnoticed because
+#      the suite printed PASS unconditionally at the end.
+#
+# The key comes from the argument, the environment, or .env. If you need a
+# per-instance key, read it from <instances_dir>/<name>.conf with
+# remote_conf_value, the way verify-deploy.sh does.
 
 # Resolve hostname: arg > env > cloudflared config > prompt
 HOST="${1:-${LLM_HOST:-}}"
@@ -40,7 +52,12 @@ else
     fi
 fi
 
-ENDPOINT="https://$HOST"
+# LLM_ENDPOINT lets us test the origin directly, bypassing the CDN — the same
+# override test-context-window.sh and benchmark.sh already accept. Without it
+# this suite could only reach the public path, which has a documented 502
+# problem (specs/context-window-deploy.md), so a red here said nothing about
+# the server.
+ENDPOINT="${LLM_ENDPOINT:-https://$HOST}"
 
 AUTH_HEADER=()
 if [[ -n "$API_KEY" ]]; then
@@ -132,6 +149,16 @@ if token_count > 0 and first_token_time is not None and last_token_time is not N
     elapsed = last_token_time - first_token_time
     tps = token_count / elapsed if elapsed > 0 else float('inf')
     print(f'\033[0;34m\u25b8 {token_count} tok \u00b7 {elapsed:.1f}s \u00b7 {tps:.1f} tok/s\033[0m')
+
+# Exit non-zero when nothing streamed. Without this the caller printed PASS
+# unconditionally: a 401, a 502, or an empty body produced zero tokens and still
+# reported success, so the repo's only streaming check could not fail.
+# More than one token also has to arrive, or the response was buffered rather
+# than streamed.
+if token_count < 2:
+    print(f'\033[0;31mFAIL\033[0m: streamed {token_count} token(s) - '
+          'expected a multi-token stream', file=sys.stderr)
+    sys.exit(1)
 PYEOF
 curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
     -H "Content-Type: application/json" \
@@ -143,5 +170,10 @@ curl -sN --max-time 180 "$ENDPOINT/v1/chat/completions" \
         "stream": true
     }' 2>/dev/null \
     | python3 -u "$_stream_py"
+_stream_rc=${PIPESTATUS[1]}
 rm -f "$_stream_py"
+if ((_stream_rc != 0)); then
+    echo -e "${RED}FAIL${NC}: streaming produced no usable output"
+    exit 1
+fi
 echo -e "${GREEN}PASS${NC}: Remote test complete"

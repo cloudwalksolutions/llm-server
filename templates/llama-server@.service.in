@@ -1,0 +1,103 @@
+# systemd template for one llama-server instance per model.
+#
+# THIS FILE IS THE ARGV. Everything llama-server is actually run with lives here,
+# so a flag change is a reviewable diff instead of an undocumented edit on the
+# target. Before this was vendored, 12 of the 17 variables deploy renders into
+# <instances_dir>/<name>.conf had no consumer anywhere in the repo: you could add
+# a knob to config/llama.yaml, deploy it, and have it reach nothing, with every
+# offline test still green.
+#
+# TWO SUBSTITUTION LAYERS, DO NOT MIX THEM
+#   at-sign placeholders -> replaced by scripts/deploy-llama.sh at render time
+#                 from config/llama.yaml. Deploy refuses to install a unit with
+#                 any left unresolved, so do not write one in prose here.
+#   ${NAME}    -> left alone. systemd expands these per instance from
+#                 EnvironmentFile, which is what deploy renders per model.
+#   %i         -> left alone. systemd's instance name, i.e. the model name.
+#
+# The instance name is also the model name clients pass as "model", and nginx
+# routes on it — see CLAUDE.md.
+#
+# Changing this file restarts EVERY instance, because they all share the
+# template. `make deploy-dry` says so before you commit to it.
+[Unit]
+Description=LLaMA.cpp Inference Server (instance %i)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=@INSTANCES_DIR@/%i.conf
+
+ExecStartPre=-@ENGINE_BIN@ rm -f llama-server-%i
+
+# Wrapper because llama-server flags depend on FLASH_ATTN and DRAFT_MODEL which
+# are conditional. systemd ExecStart can't do conditionals so we build the
+# arg list in /bin/sh first and then exec the container engine.
+#
+# Note FLASH_ATTN=false does NOT pass -fa off, it passes nothing — which leaves
+# llama.cpp on its own default of `auto`. Measured on this target, auto resolves
+# to ENABLED. See the flash_attn comment in config/llama.example.yaml.
+ExecStart=/bin/sh -c '\
+    FA_ARG=""; \
+    [ "$FLASH_ATTN" = "true" ] && FA_ARG="-fa"; \
+    DRAFT_ARGS=""; \
+    if [ -n "$DRAFT_MODEL" ] && [ "$DRAFT_MODEL" != "null" ]; then \
+        DRAFT_ARGS="-md /models/$DRAFT_MODEL --draft-max $DRAFT_MAX -ngld 999"; \
+    fi; \
+    exec @ENGINE_BIN@ run \
+        --name llama-server-%i \
+        --rm \
+@GPU_ARGS@
+        -v @MODELS_DIR@:/models:ro \
+        -p 127.0.0.1:${LLAMA_PORT}:${LLAMA_PORT} \
+        -e LLAMA_API_KEY=${LLAMA_API_KEY} \
+        ${CONTAINER_IMAGE} \
+        @SERVER_CMD@ \
+            --alias %i \
+            --no-mmap \
+            -ngl 999 $FA_ARG \
+            -c ${CONTEXT_SIZE} \
+            -np ${PARALLEL_SLOTS} \
+            -b ${BATCH_SIZE} \
+            -ub ${UBATCH_SIZE} \
+            --cont-batching \
+            --cache-prompt \
+            --cache-reuse ${CACHE_REUSE} \
+            -t ${THREADS_GEN} \
+            -tb ${THREADS_BATCH} \
+            --threads-http ${THREADS_HTTP} \
+            --cache-type-k ${CACHE_TYPE_K} \
+            --cache-type-v ${CACHE_TYPE_V} $DRAFT_ARGS \
+            -m /models/${MODEL_FILE} \
+            --host 0.0.0.0 \
+            --port ${LLAMA_PORT} \
+            --metrics'
+            # NOTE: inside the container llama-server binds 0.0.0.0:${LLAMA_PORT}.
+            # Host security comes from -p 127.0.0.1:${LLAMA_PORT}:${LLAMA_PORT}
+            # which restricts the host-side bind to loopback. nginx (also on
+            # host loopback) is the only thing that can reach these ports.
+            #
+            # --metrics is required by `make status`. --jinja is deliberately NOT
+            # passed: llama-server has defaulted jinja on since build b7170
+            # (PR #17524), and `make verify` proves streamed tool calls work by
+            # making one rather than by looking for a flag. If you ever pin a
+            # container image older than b7170, add --jinja here.
+
+ExecStop=@ENGINE_BIN@ stop llama-server-%i
+
+Restart=always
+RestartSec=10
+# Model load from cold page cache can take minutes; a short timeout here shows up
+# as a deploy that "failed" while the server was still starting normally.
+TimeoutStartSec=600
+
+LimitNOFILE=@LIMIT_NOFILE@
+LimitMEMLOCK=@LIMIT_MEMLOCK@
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llama-server-%i
+
+[Install]
+WantedBy=multi-user.target

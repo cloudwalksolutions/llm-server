@@ -25,6 +25,20 @@ _require_int() {
     fi
 }
 
+# Same, but 0 is legal. llama.cpp uses 0 to mean "disabled" for several knobs
+# (--cache-reuse 0 is its own default), so the schema has to be able to say it.
+_require_uint() {
+    local name="$1" value="$2"
+    if [[ "$value" == "null" || -z "$value" ]]; then
+        _cfg_err "$name is not set"
+        return 1
+    fi
+    if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+        _cfg_err "$name must be a non-negative integer (got '$value')"
+        return 1
+    fi
+}
+
 _require_enum() {
     local name="$1" value="$2" allowed=" ${*:3} "
     if [[ "$allowed" != *" $value "* ]]; then
@@ -32,6 +46,33 @@ _require_enum() {
         return 1
     fi
 }
+
+# A non-empty scalar. Separate from _require_int because an unset string reaches
+# the CLI as the literal "null" and fails as an opaque runtime error instead.
+_require_str() {
+    local name="$1" value="$2"
+    if [[ -z "$value" || "$value" == "null" ]]; then
+        _cfg_err "$name is not set"
+        return 1
+    fi
+}
+
+# Rendered confs are read by systemd's EnvironmentFile, which is line-oriented
+# and last-wins. A newline in any value therefore injects a whole extra
+# assignment — and CONTAINER_IMAGE is the last line rendered, so a crafted value
+# there could append LLAMA_API_KEY= and turn off auth on the only reachable path.
+_require_no_control_chars() {
+    local name="$1" value="$2"
+    if [[ "$value" == *[$'\n\r\t']* || "$value" =~ [[:cntrl:]] ]]; then
+        _cfg_err "$name contains a control character; it would corrupt the rendered conf"
+        return 1
+    fi
+}
+
+# KV cache types llama.cpp accepts for -ctk/-ctv. A typo here renders and
+# deploys cleanly, then the container refuses to start and the deploy burns its
+# full health-check timeout before rolling back.
+_KV_CACHE_TYPES="f32 f16 bf16 q8_0 q4_0 q4_1 q5_0 q5_1 iq4_nl"
 
 CONFIG_FILE=""
 declare -A _WARNED=()
@@ -56,9 +97,18 @@ load_config() {
     RUNTIME_GPU=$(yq '.runtime.gpu' "$CONFIG_FILE")
     INSTANCES_DIR=$(yq '.runtime.instances_dir // "/opt/llm/instances"' "$CONFIG_FILE")
     ROUTER_MAP=$(yq '.runtime.router_map // "/etc/llama-router/models.json"' "$CONFIG_FILE")
+    MODELS_DIR=$(yq '.runtime.models_dir // "/opt/llm/models"' "$CONFIG_FILE")
+    UNIT_PATH=$(yq '.runtime.unit_path // "/etc/systemd/system/llama-server@.service"' "$CONFIG_FILE")
 
     _require_enum "runtime.engine" "$RUNTIME_ENGINE" podman docker || return 1
     _require_enum "runtime.gpu" "$RUNTIME_GPU" amd nvidia || return 1
+
+    # Rendered into the unit template. These were dead config until deploy took
+    # ownership of the unit — the values were hardcoded on the target.
+    RES_LIMIT_NOFILE=$(yq '.resources.limit_nofile // 65535' "$CONFIG_FILE")
+    RES_LIMIT_MEMLOCK=$(yq '.resources.limit_memlock // "infinity"' "$CONFIG_FILE")
+    _require_int "resources.limit_nofile" "$RES_LIMIT_NOFILE" || return 1
+    _require_no_control_chars "resources.limit_memlock" "$RES_LIMIT_MEMLOCK" || return 1
 
     # The old schema was a single flat llama: block. Refuse to guess.
     if [[ "$(yq '.instances' "$CONFIG_FILE")" == "null" ]]; then
@@ -73,6 +123,34 @@ load_config() {
         _cfg_err "'instances:' is empty"
         return 1
     fi
+
+    # The name is a systemd instance suffix, an nginx routing key, a filename,
+    # and an interpolation into both a yq expression and a remote `sudo bash -c`.
+    # Anything outside this set breaks at least one of those, and a quote breaks
+    # it as a wall of yq lexer errors rather than a config error.
+    local n
+    for n in "${INSTANCE_NAMES[@]}"; do
+        if [[ ! "$n" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+            _cfg_err "instance name '$n' must match [A-Za-z0-9][A-Za-z0-9_.-]*"
+            echo "  The name is used as a systemd unit suffix, a filename, and the routing key." >&2
+            return 1
+        fi
+    done
+
+    # Two instances on one port: whichever binds first wins and the other
+    # crash-loops. The router-map check only compares each name to its own port,
+    # so nothing else catches this.
+    local -A _seen_ports=()
+    local p
+    for n in "${INSTANCE_NAMES[@]}"; do
+        p=$(_ivalue "$n" port)
+        [[ "$p" == "null" || -z "$p" ]] && continue
+        if [[ -n "${_seen_ports[$p]:-}" ]]; then
+            _cfg_err "instances '${_seen_ports[$p]}' and '$n' both use port $p"
+            return 1
+        fi
+        _seen_ports[$p]="$n"
+    done
 
     if [[ -f .env ]]; then
         # shellcheck disable=SC1091
@@ -93,6 +171,7 @@ load_config() {
 
     export REMOTE_HOST REMOTE_USER SSH_AUTH SSH_KEY SSH_PASS
     export RUNTIME_ENGINE RUNTIME_GPU INSTANCES_DIR ROUTER_MAP CONFIG_FILE
+    export MODELS_DIR UNIT_PATH RES_LIMIT_NOFILE RES_LIMIT_MEMLOCK
 }
 
 # Per-instance value, falling back to defaults.
@@ -142,15 +221,21 @@ load_instance() {
     _require_int "$p.threads_gen" "$INST_THREADS_GEN" || return 1
     _require_int "$p.threads_batch" "$INST_THREADS_BATCH" || return 1
     _require_int "$p.threads_http" "$INST_THREADS_HTTP" || return 1
-    _require_int "$p.cache_reuse" "$INST_CACHE_REUSE" || return 1
-    _require_int "$p.draft_max" "$INST_DRAFT_MAX" || return 1
+    _require_uint "$p.cache_reuse" "$INST_CACHE_REUSE" || return 1
+    _require_uint "$p.draft_max" "$INST_DRAFT_MAX" || return 1
     _require_enum "$p.kv_unified" "$INST_KV_UNIFIED" true false || return 1
     _require_enum "$p.flash_attn" "$INST_FLASH_ATTN" true false || return 1
+    # shellcheck disable=SC2086
+    _require_enum "$p.cache_type_k" "$INST_CACHE_TYPE_K" $_KV_CACHE_TYPES || return 1
+    # shellcheck disable=SC2086
+    _require_enum "$p.cache_type_v" "$INST_CACHE_TYPE_V" $_KV_CACHE_TYPES || return 1
 
-    if [[ -z "$INST_MODEL_FILE" || "$INST_MODEL_FILE" == "null" ]]; then
-        _cfg_err "$p.model_file is not set"
-        return 1
-    fi
+    _require_str "$p.model_file" "$INST_MODEL_FILE" || return 1
+    _require_str "$p.container_image" "$INST_CONTAINER_IMAGE" || return 1
+
+    _require_no_control_chars "$p.model_file"      "$INST_MODEL_FILE"      || return 1
+    _require_no_control_chars "$p.container_image" "$INST_CONTAINER_IMAGE" || return 1
+    _require_no_control_chars "$p.draft_model"     "$INST_DRAFT_MODEL"     || return 1
     if ((INST_UBATCH_SIZE > INST_BATCH_SIZE)); then
         _cfg_err "$p: ubatch_size ($INST_UBATCH_SIZE) must not exceed batch_size ($INST_BATCH_SIZE)"
         return 1
@@ -161,10 +246,15 @@ load_instance() {
         return 1
     fi
 
-    # A quantized V cache requires flash attention, so llama.cpp force-enables
-    # it and flash_attn:false silently has no effect. Warn rather than block:
-    # this combination is in production and works, it just doesn't mean what
-    # it says.
+    # flash_attn: false does not disable flash attention — it only omits -fa,
+    # which leaves llama.cpp on its own default of `auto`. Measured on the
+    # target (journal, 2026-08-08):
+    #   llama_context: flash_attn = auto
+    #   sched_reserve: Flash Attention was auto, set to enabled
+    # So FA is ON for every instance here, and a quantized V cache needs it —
+    # llama.cpp refuses to start with `V cache quantization requires flash_attn`
+    # if it resolves to off. Warn rather than block: this is production and it
+    # works, the setting just doesn't mean what its name suggests.
     # load_instance is called repeatedly; only warn once per instance.
     if [[ -z "${_WARNED[$name]:-}" ]]; then
         _WARNED[$name]=1
@@ -173,8 +263,10 @@ load_instance() {
             *)
                 if [[ "$INST_FLASH_ATTN" == "false" ]]; then
                     echo -e "${YELLOW}Warning:${NC} $p has flash_attn: false with a quantized cache_type_v ($INST_CACHE_TYPE_V)." >&2
-                    echo "  llama.cpp force-enables flash attention for a quantized V cache," >&2
-                    echo "  so flash_attn: false has no effect. Use f16 to actually disable it." >&2
+                    echo "  This does not disable flash attention. false only omits -fa, so llama.cpp" >&2
+                    echo "  falls back to its own default of 'auto' and resolves it to enabled — which" >&2
+                    echo "  a quantized V cache requires anyway." >&2
+                    echo "  Read the resolved state from 'make status' (flash-at), not from this setting." >&2
                 fi
                 ;;
         esac

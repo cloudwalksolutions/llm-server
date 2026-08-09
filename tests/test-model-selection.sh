@@ -21,7 +21,12 @@ if [[ -z "$HOST" ]]; then
     exit 1
 fi
 
-ENDPOINT="https://$HOST"
+# LLM_ENDPOINT lets us test the origin directly, bypassing the CDN — the same
+# override test-context-window.sh and benchmark.sh already accept. Without it
+# this suite could only reach the public path, which has a documented 502
+# problem (specs/context-window-deploy.md), so a red here said nothing about
+# the server.
+ENDPOINT="${LLM_ENDPOINT:-https://$HOST}"
 API_KEY="${LLAMA_API_KEY:-}"
 
 AUTH_HEADER=()

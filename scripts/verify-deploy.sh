@@ -23,6 +23,74 @@ assert_eq() {
     [[ "$got" == "$want" ]] && ok "$label = $got" || bad "$label: want '$want', got '$got'"
 }
 
+# Does a streamed tool call actually work end to end?
+#
+# This is the only assertion here that tests a capability rather than a value,
+# and it is the one the consuming app depends on. It deliberately checks
+# behaviour instead of flags, because the flags are not the contract and have
+# already moved once:
+#   - jinja is a default rather than a flag since llama.cpp b7170, so grepping
+#     the cmdline for --jinja would fail on a server that works perfectly
+#   - it can still be turned off out of band, by --no-jinja, by the synthesized
+#     LLAMA_ARG_NO_JINJA env var (which triggers on presence, not value), by
+#     --skip-chat-parsing, or by rolling the container image back below b7170
+#   - /props reports chat_template_caps.supports_tools: false on this build
+#     while tool calls demonstrably work, so that field is not usable either
+# Reassembling the streamed argument deltas also catches the live class of
+# upstream bugs where a partial fragment like `{` is flushed before a 500.
+assert_streamed_tool_call() {
+    local name="$1" port="$2" key="$3" body out args fr
+    body=$(jq -nc --arg m "$name" '{
+        model: $m, stream: true, max_tokens: 96, tool_choice: "required",
+        messages: [{role: "user", content: "What is the weather in Paris?"}],
+        tools: [{type: "function", function: {
+            name: "get_weather",
+            description: "Get the current weather for a city",
+            parameters: {type: "object",
+                         properties: {city: {type: "string"}},
+                         required: ["city"]}}}]}')
+
+    out=$(remote_exec "curl -s --max-time 120 -H 'Authorization: Bearer $key' \
+        -H 'Content-Type: application/json' -d $(_shq "$body") \
+        http://127.0.0.1:$port/v1/chat/completions" 2>/dev/null || echo "")
+
+    if [[ -z "$out" ]]; then
+        bad "streamed tool call: no response from 127.0.0.1:$port"
+        return
+    fi
+    # Errors come back as a JSON object, not an SSE stream.
+    if grep -qE '"error"|requires --jinja|Failed to parse input' <<<"$out"; then
+        bad "streamed tool call rejected: $(grep -oE '"message":"[^"]{0,120}' <<<"$out" | head -1)"
+        return
+    fi
+
+    local frames
+    frames=$(grep '^data: ' <<<"$out" | sed 's/^data: //' | grep -v '^\[DONE\]$')
+    args=$(jq -rj '.choices[0].delta.tool_calls[0].function.arguments // empty' <<<"$frames" 2>/dev/null)
+    fr=$(jq -r 'select(.choices[0].finish_reason != null) | .choices[0].finish_reason' <<<"$frames" 2>/dev/null | head -1)
+
+    if [[ -z "$args" ]]; then
+        bad "streamed tool call produced no tool_calls arguments (finish_reason=${fr:-none})"
+        return
+    fi
+    if ! jq -e 'has("city")' <<<"$args" >/dev/null 2>&1; then
+        bad "streamed tool args are not valid JSON with the required key: [$args]"
+        return
+    fi
+    assert_eq "streamed tool call finish_reason" "$fr" "tool_calls"
+    ok "streamed tool args parse as JSON: $args"
+
+    # More than one SSE frame is what "the answer arrives in more than one
+    # piece" means from the app side; a single frame means buffering.
+    local n
+    n=$(grep -c '^data: ' <<<"$out")
+    if ((n < 2)); then
+        bad "response arrived in $n frame(s) — streaming has regressed to buffering"
+    else
+        ok "streamed in $n frames"
+    fi
+}
+
 echo -e "${BLUE}Verifying $REMOTE_USER@$REMOTE_HOST${NC}\n"
 test_ssh || { echo -e "${RED}Cannot reach target${NC}" >&2; exit 1; }
 
@@ -40,7 +108,18 @@ for name in "${INSTANCE_NAMES[@]}"; do
     assert_eq "conf MODEL_FILE"     "$(remote_conf_value "$conf" MODEL_FILE)"     "$INST_MODEL_FILE"
 
     # The running process, not just the file on disk.
-    cmdline=$(remote_exec "tr '\\0' ' ' < /proc/\$(pgrep -f -- '--alias $name ' | head -1)/cmdline 2>/dev/null" || echo "")
+    #
+    # MainPID rather than `pgrep -f -- '--alias NAME ' | head -1`: two processes
+    # match that pattern (the podman client and the containerized server) and
+    # head -1 picked whichever had the lower PID. MainPID is the unit's own
+    # process — the podman client — whose argv carries the full flag list.
+    pid=$(remote_exec "systemctl show -p MainPID --value $unit" 2>/dev/null | tr -d '\r')
+    if [[ ! "$pid" =~ ^[0-9]+$ ]] || ((pid == 0)); then
+        bad "no MainPID for $unit"
+        cmdline=""
+    else
+        cmdline=$(remote_exec "tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null" || echo "")
+    fi
     if [[ -z "$cmdline" ]]; then
         bad "could not read the live cmdline"
     else
@@ -58,6 +137,22 @@ for name in "${INSTANCE_NAMES[@]}"; do
     else
         bad "could not read /props on 127.0.0.1:$INST_PORT"
     fi
+
+    # /props reports one number for the whole server. /slots reports what each
+    # slot actually got, so it catches a divergence /props would average away,
+    # and proves the slot COUNT too — which nothing else here checks.
+    slots=$(remote_exec "curl -sf -H 'Authorization: Bearer $key' http://127.0.0.1:$INST_PORT/slots" 2>/dev/null || echo "")
+    if [[ -z "$slots" ]] || ! jq -e 'type == "array"' <<<"$slots" >/dev/null 2>&1; then
+        bad "could not read /slots on 127.0.0.1:$INST_PORT"
+    else
+        assert_eq "slot count" "$(jq -r 'length' <<<"$slots")" "$INST_PARALLEL_SLOTS"
+        # unique so a single mismatched slot cannot hide behind seven correct ones
+        assert_eq "every slot n_ctx" \
+            "$(jq -r '[.[].n_ctx] | unique | join(",")' <<<"$slots")" \
+            "$INST_CONTEXT_PER_REQUEST"
+    fi
+
+    assert_streamed_tool_call "$name" "$INST_PORT" "$key"
     echo ""
 done
 

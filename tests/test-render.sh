@@ -104,16 +104,37 @@ test_derivation_round_trips() {
     ((bad == 0)) && pass "all instances round-trip through PAD256"
 }
 
-test_detects_non_round_tripping_config() {
-    echo "TEST: a context that cannot round-trip is caught"
-    # 1000/3 = 333 -> PAD256 -> 512, not 1000
-    local eff
-    eff=$(effective_ctx_per_request 1000 3 false)
-    if [[ "$eff" == "1000" ]]; then
-        fail "padding check is a no-op"
+# The behaviour that matters is that deploy REFUSES such a config, not that a
+# helper computes a number. 16000 x 4 = 64000, which divides back to 16000 but
+# PAD256s up to 16128 — so the config would silently serve a window 128 tokens
+# wider than it asked for. This is the reachable failure shape; the derivation
+# guard runs only in --check/--dry-run/apply, never in --render.
+test_refuses_a_window_it_cannot_deliver() {
+    echo "TEST: deploy refuses a context that cannot survive PAD256"
+    local cfg out rc
+    cfg=$(mktemp --suffix=.yaml)
+    yq '.instances.base.context_per_request = 16000' "$FIXTURES/amd.yaml" > "$cfg"
+    out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --check 2>&1)
+    rc=$?
+    rm -f "$cfg"
+    if ((rc == 0)); then
+        fail "16000/request was accepted; llama.cpp would serve 16128"
         return
     fi
-    pass "PAD256 mismatch detectable (1000/3 -> $eff)"
+    grep -q '16128' <<<"$out" || { fail "message does not name the window actually served"; return; }
+    pass "refused: $(sed 's/\x1b\[[0-9;]*m//g' <<<"$out" | head -1)"
+}
+
+test_accepts_a_window_it_can_deliver() {
+    echo "TEST: the guard is not simply refusing everything"
+    local out rc
+    out=$(LLAMA_CONFIG="$FIXTURES/amd.yaml" "$DEPLOY" --check 2>&1)
+    rc=$?
+    if ((rc != 0)); then
+        fail "a valid config was refused: $(sed 's/\x1b\[[0-9;]*m//g' <<<"$out" | head -1)"
+        return
+    fi
+    pass "valid config passes --check"
 }
 
 # ── Defaults / override merging ───────────────────────────────────────────────
@@ -201,6 +222,67 @@ test_rejects_bad_config() {
     expect_reject "missing context"         'del(.instances.base.context_per_request)'
     expect_reject "missing model_file"      'del(.instances.base.model_file)'
     expect_reject "non-numeric slots"       '.instances.base.parallel_slots = "many"'
+}
+
+# Every config below rendered and deployed cleanly before this suite existed.
+# Each one breaks the target in a way that only surfaces as a failed health
+# check minutes later, or — for the last two — not at all.
+test_rejects_configs_that_break_the_target() {
+    echo "TEST: configs that would break the running server are refused"
+
+    # A typo'd cache type deploys fine, then the container refuses to start and
+    # the deploy burns its full 300s health-check timeout per instance.
+    expect_reject "misspelled cache_type" \
+        '.instances.base.cache_type_k = "q8-0" | .instances.base.cache_type_v = "q8-0"'
+
+    # Renders CONTAINER_IMAGE=null, which podman reports as an opaque error.
+    expect_reject "missing container_image" 'del(.defaults.container_image)'
+
+    # One instance wins the bind; the other crash-loops. The router-map check
+    # only compares each name against its own port, so nothing else sees this.
+    expect_reject "two instances on one port" '.instances.overridden.port = 8082'
+
+    # Names interpolate into a yq expression and a remote `sudo bash -c`. A
+    # quote here produced a wall of yq lexer errors rather than a config error.
+    expect_reject "instance name with a quote" \
+        '.instances["bad\"name"] = .instances.base'
+    expect_reject "instance name with a space" \
+        '.instances["bad name"] = .instances.base'
+
+    # systemd's EnvironmentFile is line-oriented and last-wins, and
+    # CONTAINER_IMAGE is the last line rendered — so a newline in a value can
+    # append LLAMA_API_KEY= and silently disable auth.
+    expect_reject "newline in model_file" \
+        '.instances.base.model_file = "A.gguf
+EVIL=1"'
+    expect_reject "newline in container_image" \
+        '.defaults.container_image = "img:tag
+LLAMA_API_KEY="'
+}
+
+# llama.cpp's own default for --cache-reuse is 0 (disabled). The schema could
+# not express it, because the validator rejected every non-positive integer.
+test_accepts_zero_where_llama_cpp_means_disabled() {
+    echo "TEST: cache_reuse:0 and draft_max:0 are legal, not errors"
+    local cfg out rc
+    cfg=$(mktemp --suffix=.yaml)
+    yq '.defaults.cache_reuse = 0 | .defaults.draft_max = 0' "$FIXTURES/amd.yaml" > "$cfg"
+    out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
+    rc=$?
+    rm -f "$cfg"
+    if ((rc != 0)); then
+        fail "zero was rejected: $(sed 's/\x1b\[[0-9;]*m//g' <<<"$out" | head -1)"
+        return
+    fi
+    [[ "$(conf_val "$out" CACHE_REUSE)" == "0" ]] || { fail "CACHE_REUSE did not render as 0"; return; }
+    pass "0 accepted and rendered for both"
+}
+
+# But a negative or non-numeric value still has to fail.
+test_still_rejects_non_integers_where_zero_is_allowed() {
+    echo "TEST: relaxing to unsigned did not relax to anything"
+    expect_reject "negative cache_reuse"    '.defaults.cache_reuse = -1'
+    expect_reject "non-numeric cache_reuse" '.defaults.cache_reuse = "lots"'
 }
 
 # llama.cpp force-enables flash attention when the V cache is quantized, so
@@ -294,6 +376,84 @@ test_remote_quoting_is_safe() {
     pass "_shq round-trips and executes nothing"
 }
 
+# ── Unit template ─────────────────────────────────────────────────────────────
+render_unit() { LLAMA_CONFIG="$FIXTURES/$1.yaml" "$DEPLOY" --render unit 2>&1; }
+
+# The unit is the argv. A placeholder that survives rendering installs a unit
+# systemd cannot start, and the failure would land as an opaque container error
+# minutes into a deploy.
+test_unit_renders_with_nothing_left_unresolved() {
+    echo "TEST: the rendered unit has no unresolved placeholders"
+    local out fixture bad=0
+    for fixture in amd nvidia; do
+        out=$(render_unit "$fixture")
+        if grep -q '@[A-Z_]\+@' <<<"$out"; then
+            fail "$fixture: unresolved $(grep -o '@[A-Z_]\+@' <<<"$out" | sort -u | tr '\n' ' ')"
+            bad=1
+        elif ! grep -q '^\[Service\]' <<<"$out"; then
+            fail "$fixture: output is not a systemd unit"
+            bad=1
+        fi
+    done
+    ((bad == 0)) && pass "both fixtures render a complete unit"
+}
+
+# runtime.engine and runtime.gpu have to reach the argv, or the unit would launch
+# the wrong container runtime with the wrong device flags.
+test_unit_reflects_engine_and_gpu() {
+    echo "TEST: runtime.engine and runtime.gpu change the rendered argv"
+    local amd nvidia
+    amd=$(render_unit amd)
+    nvidia=$(render_unit nvidia)
+
+    grep -q '/usr/bin/podman run' <<<"$amd"    || { fail "amd fixture did not render podman"; return; }
+    grep -q -- '--device /dev/kfd' <<<"$amd"   || { fail "amd fixture lost the AMD devices"; return; }
+    grep -q -- '--gpus all' <<<"$amd"          && { fail "amd fixture rendered NVIDIA flags"; return; }
+
+    grep -q '/usr/bin/docker run' <<<"$nvidia" || { fail "nvidia fixture did not render docker"; return; }
+    grep -q -- '--gpus all' <<<"$nvidia"       || { fail "nvidia fixture lost --gpus all"; return; }
+    grep -q -- '--device /dev/kfd' <<<"$nvidia" && { fail "nvidia fixture rendered AMD devices"; return; }
+
+    # The CUDA server image has llama-server as its ENTRYPOINT, so repeating the
+    # command word there would be parsed as a model argument.
+    grep -qE '^\s+llama-server \\' <<<"$amd" || { fail "amd fixture lost the llama-server command word"; return; }
+    grep -qE '^\s+llama-server \\' <<<"$nvidia" && { fail "nvidia fixture must not name llama-server (it is the ENTRYPOINT)"; return; }
+
+    pass "engine, GPU flags and command word all follow runtime.*"
+}
+
+# resources: was dead config until deploy owned the unit. Assert it lands.
+test_unit_carries_resource_limits() {
+    echo "TEST: resources: reaches the unit's Limit* directives"
+    local cfg out
+    cfg=$(mktemp --suffix=.yaml)
+    yq '.resources.limit_nofile = 4242 | .resources.limit_memlock = "unlimited"' \
+        "$FIXTURES/amd.yaml" > "$cfg"
+    out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render unit 2>&1)
+    rm -f "$cfg"
+    grep -q '^LimitNOFILE=4242$'      <<<"$out" || { fail "limit_nofile did not reach LimitNOFILE"; return; }
+    grep -q '^LimitMEMLOCK=unlimited$' <<<"$out" || { fail "limit_memlock did not reach LimitMEMLOCK"; return; }
+    pass "both limits rendered"
+}
+
+# Per-instance values must NOT be baked into the shared unit — they belong in the
+# per-model conf that systemd expands. Baking one in would silently give every
+# instance the first instance's setting.
+test_unit_leaves_per_instance_values_to_systemd() {
+    echo "TEST: the shared unit references \${VAR}, never a concrete instance value"
+    local out
+    out=$(render_unit amd)
+    grep -q -- '-c ${CONTEXT_SIZE}' <<<"$out" || { fail "-c was not left as \${CONTEXT_SIZE}"; return; }
+    grep -q -- '-np ${PARALLEL_SLOTS}' <<<"$out" || { fail "-np was not left as \${PARALLEL_SLOTS}"; return; }
+    # 65536 is amd/base's derived total; finding it here would mean it got baked in.
+    if grep -qE -- '-c[[:space:]]+[0-9]+' <<<"$out"; then
+        fail "a literal -c value was baked into the shared unit"
+        return
+    fi
+    grep -q '%i' <<<"$out" || { fail "the systemd instance placeholder %i was lost"; return; }
+    pass "per-instance values stay as \${VAR} / %i"
+}
+
 test_rejects_flat_legacy_schema() {
     echo "TEST: the old single-instance schema fails with a clear message"
     local cfg out rc
@@ -329,22 +489,33 @@ fi
 
 echo -e "${BLUE}Offline render + config tests${NC}\n"
 
+# Without this guard a typo'd test name printed "command not found" and the
+# suite exited 0 having run nothing.
 if [[ $# -ge 1 ]]; then
+    declare -F "$1" >/dev/null || { echo -e "${RED}no such test: $1${NC}" >&2; exit 2; }
     "$1"
 else
     for t in test_golden_renders \
              test_context_is_multiplied_not_divided \
              test_kv_unified_is_not_divided \
              test_derivation_round_trips \
-             test_detects_non_round_tripping_config \
+             test_refuses_a_window_it_cannot_deliver \
+             test_accepts_a_window_it_can_deliver \
              test_defaults_apply \
              test_overrides_win \
              test_false_override_is_not_swallowed \
              test_empty_string_default_is_not_swallowed \
              test_api_key_is_preserved_not_generated \
              test_rejects_bad_config \
+             test_rejects_configs_that_break_the_target \
+             test_accepts_zero_where_llama_cpp_means_disabled \
+             test_still_rejects_non_integers_where_zero_is_allowed \
              test_warns_quantized_kv_with_flash_attn_false \
              test_no_warning_when_cache_is_f16 \
+             test_unit_renders_with_nothing_left_unresolved \
+             test_unit_reflects_engine_and_gpu \
+             test_unit_carries_resource_limits \
+             test_unit_leaves_per_instance_values_to_systemd \
              test_rejects_flat_legacy_schema \
              test_example_config_is_valid \
              test_example_documents_every_key \

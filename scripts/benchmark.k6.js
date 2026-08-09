@@ -78,6 +78,18 @@ export const options = {
     // A run with too few samples is inconclusive, not green. Without this a
     // scenario that never executed silently passes every threshold above.
     'iterations': ['count>100'],
+    // Per-scenario floors, not just a global one. `iterations` above counts all
+    // scenarios together, so the prefill phase could contribute ~50 samples and
+    // still pass — and a p(95) over 50 points is roughly the 3rd worst
+    // observation. These also catch a scenario that failed to execute at all.
+    'http_reqs{phase:decode}': ['count>100'],
+    'http_reqs{phase:prefill}': ['count>30'],
+    // handleSummary only receives a TAGGED submetric if a threshold names that
+    // exact selector. http_req_waiting was requested in `wanted` below but never
+    // once appeared in a result file, because nothing declared it here. These are
+    // deliberately no-op bounds: their job is materialization, not gating.
+    'http_req_waiting{phase:decode}': ['p(95)>=0'],
+    'http_req_waiting{phase:prefill}': ['p(95)>=0'],
   },
 };
 

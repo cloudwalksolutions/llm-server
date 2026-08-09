@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "description": "A recorded multi-turn tool-using session, shaped like the TwoFit marketing agent (specs/twofit-agent.md): one web_search tool whose arguments must be schema-shaped JSON, streamed, with conversation history growing across turns.",
+  "why_recorded": "Replay is deterministic on purpose. The assistant and tool messages appended to history are the RECORDED ones, never what the model just produced, so the prompt prefix is byte-identical on every run. A benchmark that fed the model's live output back in would measure a different conversation each time, which makes prompt-cache behaviour and latency percentiles incomparable between runs.",
+
+  "system": "You are a marketing research agent. Use the web_search tool for anything time-sensitive. When you have results, answer with a JSON object containing the keys summary, points, and sources. Be concise.",
+
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "web_search",
+        "description": "Search the web for current information and return ranked results.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "The search query"
+            },
+            "max_results": {
+              "type": "integer",
+              "description": "How many results to return"
+            }
+          },
+          "required": ["query"]
+        }
+      }
+    }
+  ],
+
+  "turns": [
+    {
+      "id": "t1-tool-call",
+      "user": "What is the latest on embedded finance for small merchants? Search first.",
+      "expect": "tool_call",
+      "required_args": ["query"],
+      "replay_assistant": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_t1",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"query\": \"embedded finance small merchants 2026\"}"
+            }
+          }
+        ]
+      },
+      "replay_tool": {
+        "role": "tool",
+        "tool_call_id": "call_t1",
+        "content": "[{\"title\":\"Embedded finance adoption among SMB merchants\",\"url\":\"https://example.invalid/embedded-finance/1\",\"content\":\"Small and mid-sized merchants increasingly obtain working capital, card issuing and payout rails directly inside the software they already use for scheduling and invoicing. Adoption is concentrated in verticals with recurring billing, where the platform already holds settlement data and can underwrite from observed cash flow rather than filed statements. Take rates have compressed as more platforms enter, and differentiation has moved toward speed of onboarding, dispute handling, and the quality of reconciliation reporting exposed back to the merchant.\"},{\"title\":\"Underwriting from platform data\",\"url\":\"https://example.invalid/embedded-finance/2\",\"content\":\"Platforms that observe transaction history can price credit with far less friction than a traditional acquirer, because the cash-flow record is already continuous and verified. The operational burden shifts to servicing, collections and compliance, which many software companies underestimate. Partnerships with a sponsor bank remain the common structure, and the economics depend heavily on who owns the deposit relationship and who carries the loss.\"},{\"title\":\"Payout speed as the differentiator\",\"url\":\"https://example.invalid/embedded-finance/3\",\"content\":\"Merchants consistently rank settlement speed above headline pricing when choosing an embedded provider. Same-day and instant payout options have moved from premium features to table stakes in several verticals, funded either by the platform's own balance sheet or by a partner willing to take intraday exposure. The reconciliation experience — whether a merchant can explain a deposit to their accountant without opening a support ticket — is a recurring source of churn.\"}]"
+      }
+    },
+    {
+      "id": "t2-followup",
+      "user": "Now give me the three most important points as JSON.",
+      "expect": "content",
+      "replay_assistant": {
+        "role": "assistant",
+        "content": "{\"summary\": \"Embedded finance for SMB merchants is consolidating around platforms that already hold settlement data.\", \"points\": [\"Underwriting from observed cash flow beats filed statements\", \"Take rates are compressing; speed and reconciliation differentiate\", \"Payout speed outranks headline pricing for merchants\"], \"sources\": [\"https://example.invalid/embedded-finance/1\", \"https://example.invalid/embedded-finance/2\"]}"
+      }
+    },
+    {
+      "id": "t3-second-tool-call",
+      "user": "Search again for how card issuing pricing has changed, then update the summary.",
+      "expect": "tool_call",
+      "required_args": ["query"],
+      "replay_assistant": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_t3",
+            "type": "function",
+            "function": {
+              "name": "web_search",
+              "arguments": "{\"query\": \"card issuing pricing changes 2026\"}"
+            }
+          }
+        ]
+      },
+      "replay_tool": {
+        "role": "tool",
+        "tool_call_id": "call_t3",
+        "content": "[{\"title\":\"Card issuing pricing in 2026\",\"url\":\"https://example.invalid/issuing/1\",\"content\":\"Per-card monthly fees have largely disappeared for programs above modest volume, replaced by interchange sharing arrangements that align the platform and the issuer. Processors compete on the breadth of controls exposed through the API — spend limits, merchant category restrictions, just-in-time funding — rather than on unit price. Programs that need physical cards still pay meaningful fulfilment costs, and international issuance remains materially more expensive than domestic.\"},{\"title\":\"Just-in-time funding economics\",\"url\":\"https://example.invalid/issuing/2\",\"content\":\"Just-in-time funding lets a platform authorize against its own logic at the moment of the transaction rather than pre-funding balances, which frees working capital but requires very high availability in the authorization path. Providers price this as a premium tier, and the operational requirement is often what disqualifies smaller platforms rather than the fee itself.\"},{\"title\":\"Interchange sharing structures\",\"url\":\"https://example.invalid/issuing/3\",\"content\":\"The share a platform receives depends on program volume, card type and whether the platform or the issuer owns the compliance obligation. Regulated debit caps limit upside in some geographies, which pushes programs toward credit or prepaid structures. Negotiated floors and volume tiers make published pricing a poor guide to what a given program actually earns.\"}]"
+      }
+    },
+    {
+      "id": "t4-final",
+      "user": "Combine both searches into one final JSON answer.",
+      "expect": "content",
+      "replay_assistant": {
+        "role": "assistant",
+        "content": "{\"summary\": \"Both embedded lending and card issuing are competing on operational quality rather than price.\", \"points\": [\"Platform-held data drives underwriting\", \"Issuing fees moved to interchange sharing\", \"API control surface is the real differentiator\"], \"sources\": [\"https://example.invalid/embedded-finance/1\", \"https://example.invalid/issuing/1\"]}"
+      }
+    }
+  ]
+}

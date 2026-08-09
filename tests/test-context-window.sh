@@ -12,6 +12,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
+# Sourced before the env resolution below so that explicit env still wins:
+# load_config sources .env itself. Failure is not fatal — this suite can point
+# at an endpoint that has no local config at all.
+# shellcheck source=../scripts/lib/common.sh
+source scripts/lib/common.sh
+_HAVE_CONFIG=0
+load_config "${LLAMA_CONFIG:-config/llama.yaml}" >/dev/null 2>&1 && _HAVE_CONFIG=1
+
 # Explicit env wins over .env. Strip quotes in case a caller exported raw
 # .env lines rather than sourcing them.
 _unquote() { local v="$1"; v="${v#[\'\"]}"; v="${v%[\'\"]}"; printf '%s' "$v"; }
@@ -39,7 +47,19 @@ ENDPOINT="${LLM_ENDPOINT:-https://$HOST}"
 API_KEY="${LLAMA_API_KEY:-}"
 MODEL="${LLM_MODEL:-qwen3-14b}"
 
-# CONTEXT_SIZE_ISSUE.md asks for >= 8192; we target 16384 for headroom
+# The floor is what THIS instance is configured to serve, read from
+# config/llama.yaml — not a fixed number. A hardcoded 16384 made the suite fail
+# against a perfectly correct config for every instance sized differently
+# (qwen3-8b serves 4096, qwen3-14b-1m serves 40960).
+# An explicit MIN_CONTEXT still wins, and 16384 is the fallback when there is no
+# local config to read.
+if [[ -z "${MIN_CONTEXT:-}" ]] && ((_HAVE_CONFIG)); then
+    if load_instance "$MODEL" >/dev/null 2>&1; then
+        MIN_CONTEXT="$INST_CONTEXT_PER_REQUEST"
+    else
+        echo -e "${YELLOW}note:${NC} '$MODEL' is not an instance in $CONFIG_FILE; using the default floor" >&2
+    fi
+fi
 MIN_CONTEXT="${MIN_CONTEXT:-16384}"
 # What clients request as max_output_tokens
 CLIENT_MAX_OUTPUT="${CLIENT_MAX_OUTPUT:-4096}"
@@ -136,7 +156,7 @@ test_effective_context_meets_floor() {
 
     if [[ -z "$n_ctx" ]]; then
         if [[ "$HTTP_CODE" == "200" ]]; then
-            pass "server accepted a ~66k-token prompt; window exceeds $MIN_CONTEXT"
+            pass "server accepted a ~$((reps * 11))-token prompt; window >= $MIN_CONTEXT"
             return
         fi
         fail "could not read .error.n_ctx (HTTP $HTTP_CODE)"
@@ -313,7 +333,10 @@ echo -e "  model:    $MODEL"
 echo -e "  required: $MIN_CONTEXT tokens per request"
 echo ""
 
+# A typo'd test name would otherwise print "command not found" and exit 0
+# having asserted nothing.
 if [[ $# -ge 1 ]]; then
+    declare -F "$1" >/dev/null || { echo -e "${RED}no such test: $1${NC}" >&2; exit 2; }
     "$1"
 else
     test_effective_context_meets_floor

@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "label": "agent-q8_0-after",
+  "instance": "qwen3-14b-1m",
+  "fixture": "tests/fixtures/agent-session.json",
+  "env": {
+    "contextPerRequest": 40960,
+    "parallelSlots": 1,
+    "totalContext": 40960,
+    "cacheTypeK": "q8_0",
+    "cacheTypeV": "q8_0",
+    "build": "b7966-8872ad212",
+    "noThink": true
+  },
+  "correctness": {
+    "turns": 24,
+    "httpErrors": 0,
+    "streamingBroken": 0,
+    "toolCallMissing": 0,
+    "toolArgsInvalidJson": 0,
+    "toolArgsSchemaMismatch": 0,
+    "finishReasonWrong": 0,
+    "coldTurnWasCached": 0,
+    "warmTurnNotCached": 0,
+    "budgetExhaustedByReasoning": 0
+  },
+  "latency": {
+    "ttftMsMedian": 2256,
+    "ttftMsP95": 5221,
+    "serverPromptMsMedian": 892.514,
+    "genTokensPerSecMedian": 7.26431,
+    "warmCacheHitPctMedian": 68,
+    "harnessOverheadMsMedian": 1722.5
+  }
+}
