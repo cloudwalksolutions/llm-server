@@ -181,21 +181,37 @@ if ! remote_exec "command -v $RUNTIME_ENGINE >/dev/null 2>&1"; then
     exit 1
 fi
 
+NEW_INSTANCES=()
+EXISTING_INSTANCES=()
 for name in "${INSTANCE_NAMES[@]}"; do
-    remote_exec "test -f $INSTANCES_DIR/$name.conf" || {
-        echo -e "${RED}No $INSTANCES_DIR/$name.conf on the target.${NC}" >&2
-        echo "Adding an instance also needs an nginx router entry — do that first." >&2
+    if remote_exec "test -f $INSTANCES_DIR/$name.conf"; then
+        EXISTING_INSTANCES+=("$name")
+        continue
+    fi
+    load_instance "$name"
+    remote_exec "test -f $MODELS_DIR/$INST_MODEL_FILE" || {
+        echo -e "${RED}$name is new, but $MODELS_DIR/$INST_MODEL_FILE is not on the target.${NC}" >&2
         exit 1
     }
+    NEW_INSTANCES+=("$name")
+    echo -e "  ${YELLOW}NEW${NC}        $name ($INST_MODEL_FILE)"
 done
+((${#EXISTING_INSTANCES[@]} > 0)) || {
+    echo -e "${RED}No existing instance to take the API key from; this script never invents one.${NC}" >&2
+    exit 1
+}
 
 # nginx routes by this map; changing a port without it breaks routing.
 echo -e "${CYAN}[4/7]${NC} Checking nginx router map..."
 ROUTER_JSON=$(remote_exec "cat $ROUTER_MAP 2>/dev/null" || echo "")
+NEW_ROUTER_JSON="$ROUTER_JSON"
 for name in "${INSTANCE_NAMES[@]}"; do
     load_instance "$name"
     mapped=$(jq -r --arg n "$name" '.[$n] // ""' <<<"$ROUTER_JSON" 2>/dev/null || echo "")
-    if [[ -z "$mapped" ]]; then
+    if [[ -z "$mapped" && " ${NEW_INSTANCES[*]} " == *" $name "* ]]; then
+        NEW_ROUTER_JSON=$(router_map_with "$NEW_ROUTER_JSON" "$name" "$INST_PORT")
+        echo -e "  ${YELLOW}NEW${NC}        route $name -> 127.0.0.1:$INST_PORT"
+    elif [[ -z "$mapped" ]]; then
         echo -e "  ${YELLOW}warn${NC} $name is not in $ROUTER_MAP — nginx cannot route to it"
     elif [[ "$mapped" != "127.0.0.1:$INST_PORT" ]]; then
         echo -e "  ${RED}$name: router says $mapped but config says port $INST_PORT${NC}" >&2
@@ -225,7 +241,9 @@ else
     diff -u <(printf '%s\n' "$CUR_UNIT") <(printf '%s\n' "$NEW_UNIT") | sed 's/^/      /' || true
 fi
 for name in "${INSTANCE_NAMES[@]}"; do
-    key=$(remote_conf_value "$INSTANCES_DIR/$name.conf" LLAMA_API_KEY)
+    key=$(remote_conf_value "$INSTANCES_DIR/${EXISTING_INSTANCES[0]}.conf" LLAMA_API_KEY)
+    [[ " ${NEW_INSTANCES[*]} " == *" $name "* ]] \
+        || key=$(remote_conf_value "$INSTANCES_DIR/$name.conf" LLAMA_API_KEY)
     if [[ -z "$key" ]]; then
         echo -e "${RED}$name: could not read LLAMA_API_KEY from the target.${NC}" >&2
         echo "Refusing to write a config that would disable auth." >&2
@@ -268,6 +286,7 @@ if [[ "$MODE" == "dry-run" ]]; then
     echo ""
     ((UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $UNIT_PATH + daemon-reload${NC}"
     ((${#CHANGED[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would rewrite confs: ${CHANGED[*]}${NC}"
+    [[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]] && echo -e "${YELLOW}DRY RUN — would add routes for: ${NEW_INSTANCES[*]} and reload nginx${NC}"
     echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]}${NC}"
     echo -e "${YELLOW}Run 'make deploy' to apply${NC}"
     exit 0
@@ -344,8 +363,12 @@ if ((${#CHANGED[@]} > 0)); then
     echo -e "${CYAN}[6/7]${NC} Writing configs for: ${CHANGED[*]}"
 fi
 for name in "${CHANGED[@]}"; do
-    remote_exec_sudo "cp $INSTANCES_DIR/$name.conf $INSTANCES_DIR/$name.conf.backup.$TIMESTAMP"
-    rb "cp $INSTANCES_DIR/$name.conf.backup.$TIMESTAMP $INSTANCES_DIR/$name.conf"
+    if [[ " ${NEW_INSTANCES[*]} " == *" $name "* ]]; then
+        rb "rm -f $INSTANCES_DIR/$name.conf"
+    else
+        remote_exec_sudo "cp $INSTANCES_DIR/$name.conf $INSTANCES_DIR/$name.conf.backup.$TIMESTAMP"
+        rb "cp $INSTANCES_DIR/$name.conf.backup.$TIMESTAMP $INSTANCES_DIR/$name.conf"
+    fi
 
     printf '%s\n' "${RENDERED[$name]}" | remote_write_sudo "$INSTANCES_DIR/$name.conf" 640
 
@@ -360,10 +383,26 @@ for name in "${CHANGED[@]}"; do
     echo -e "  ${GREEN}written + verified${NC}  $name"
 done
 
+if [[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]]; then
+    echo -e "${CYAN}[6/7]${NC} Routing ${NEW_INSTANCES[*]}"
+    remote_exec_sudo "cp $ROUTER_MAP $ROUTER_MAP.backup.$TIMESTAMP"
+    rb "cp $ROUTER_MAP.backup.$TIMESTAMP $ROUTER_MAP && systemctl reload nginx"
+    jq . <<<"$NEW_ROUTER_JSON" | remote_write_sudo "$ROUTER_MAP" 644
+    remote_exec_sudo "nginx -t -q && systemctl reload nginx"
+    echo -e "  ${GREEN}router map written + nginx reloaded${NC}"
+fi
+
 echo -e "${CYAN}[7/7]${NC} Restarting ${#RESTART[@]} instance(s) (model load takes a minute)..."
 for name in "${RESTART[@]}"; do
     load_instance "$name"
     echo -n "  $name "
+    if [[ " ${NEW_INSTANCES[*]} " == *" $name "* ]]; then
+        rb "systemctl disable --now llama-server@$name"
+        remote_exec_sudo "systemctl enable --now llama-server@$name"
+        health_check "$name" "$INST_PORT" 600
+        echo -e " ${GREEN}healthy${NC}"
+        continue
+    fi
     remote_exec_sudo "systemctl restart llama-server@$name"
     health_check "$name" "$INST_PORT" 300
     echo -e " ${GREEN}healthy${NC}"

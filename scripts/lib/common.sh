@@ -429,3 +429,7 @@ agent_gate() {
         return 1
     fi
 }
+
+router_map_with() {
+    jq -c --arg n "$2" --arg b "127.0.0.1:$3" '. + {($n): $b}' <<<"$1"
+}
