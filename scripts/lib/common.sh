@@ -213,6 +213,7 @@ load_instance() {
     INST_REASONING_BUDGET=$(_ivalue "$name" reasoning_budget)
     INST_REASONING_BUDGET_MESSAGE=$(_ivalue "$name" reasoning_budget_message)
     INST_CONTAINER_IMAGE=$(_ivalue "$name" container_image)
+    INST_SAMPLING=$(yq -o=json -I=0 ".instances.\"$name\".sampling // {}" "$CONFIG_FILE")
 
     INST_DRAFT_MODEL=$(_ivalue "$name" draft_model)
     [[ "$INST_DRAFT_MODEL" == "null" ]] && INST_DRAFT_MODEL=""
@@ -249,6 +250,12 @@ load_instance() {
         _cfg_err "$p.reasoning_budget_message may not contain \", \\, \$ or a backtick"
         return 1
     fi
+    local flags='{"temperature":"--temp","top_p":"--top-p","top_k":"--top-k","min_p":"--min-p","presence_penalty":"--presence-penalty"}'
+    if ! jq -e --argjson f "$flags" 'to_entries | all(($f[.key] != null) and (.value | type == "number"))' <<<"$INST_SAMPLING" >/dev/null; then
+        _cfg_err "$p.sampling takes numbers for: $(jq -r 'keys | join(", ")' <<<"$flags")"
+        return 1
+    fi
+    INST_SAMPLING_ARGS=$(jq -r --argjson f "$flags" 'to_entries | map("\($f[.key]) \(.value)") | join(" ")' <<<"$INST_SAMPLING")
     if ((INST_UBATCH_SIZE > INST_BATCH_SIZE)); then
         _cfg_err "$p: ubatch_size ($INST_UBATCH_SIZE) must not exceed batch_size ($INST_BATCH_SIZE)"
         return 1

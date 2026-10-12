@@ -49,6 +49,12 @@ instances:
     context_per_request: 131072
     parallel_slots: 2
     reasoning_budget: 2048
+    sampling:
+      temperature: 1.0
+      top_p: 0.95
+      top_k: 20
+      min_p: 0
+      presence_penalty: 1.5
 
 resources:
   limit_nofile: 65535

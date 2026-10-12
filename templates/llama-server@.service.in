@@ -71,7 +71,7 @@ ExecStart=/bin/sh -c '\
             --cache-type-v ${CACHE_TYPE_V} $DRAFT_ARGS \
             --reasoning ${REASONING} \
             --reasoning-budget ${REASONING_BUDGET} \
-            --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}" \
+            --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}" $SAMPLING_ARGS \
             -m /models/${MODEL_FILE} \
             --host 0.0.0.0 \
             --port ${LLAMA_PORT} \
