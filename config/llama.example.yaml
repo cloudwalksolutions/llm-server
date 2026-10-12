@@ -1,6 +1,5 @@
-# llama-server configuration — copy to config/llama.yaml and edit.
+# llama-server configuration schema. The live target's config is config/llama.yaml.
 #
-# config/llama.yaml is gitignored, so this file is the record of the schema.
 # Every value below is also validated by scripts/lib/common.sh; run
 # `make test-unit` after changing the schema.
 
@@ -103,6 +102,7 @@ defaults:
   draft_model: ""
   draft_max: 16
 
+  reasoning: auto
   reasoning_budget: 512
   reasoning_budget_message: Considering the limited time by the user, I have to give the solution based on the thinking directly now.
 

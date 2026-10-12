@@ -146,6 +146,7 @@ test_defaults_apply() {
     [[ "$(conf_val "$out" CACHE_TYPE_K)" == "q8_0" ]] || { fail "CACHE_TYPE_K not inherited"; return; }
     [[ "$(conf_val "$out" DRAFT_MAX)" == "16" ]] || { fail "DRAFT_MAX not inherited"; return; }
     [[ "$(conf_val "$out" REASONING_BUDGET)" == "512" ]] || { fail "REASONING_BUDGET not inherited"; return; }
+    [[ "$(conf_val "$out" REASONING)" == "auto" ]] || { fail "REASONING not inherited"; return; }
     [[ "$(conf_val "$out" REASONING_BUDGET_MESSAGE)" == '"Answer now."' ]] || { fail "REASONING_BUDGET_MESSAGE not inherited"; return; }
     pass "defaults inherited"
 }
@@ -158,6 +159,7 @@ test_overrides_win() {
     [[ "$(conf_val "$out" CACHE_TYPE_K)" == "f16" ]] || { fail "CACHE_TYPE_K override ignored"; return; }
     [[ "$(conf_val "$out" DRAFT_MAX)" == "24" ]] || { fail "DRAFT_MAX override ignored"; return; }
     [[ "$(conf_val "$out" REASONING_BUDGET)" == "0" ]] || { fail "REASONING_BUDGET override ignored"; return; }
+    [[ "$(conf_val "$out" REASONING)" == "off" ]] || { fail "REASONING override ignored"; return; }
     pass "overrides applied"
 }
 
@@ -261,6 +263,7 @@ EVIL=1"'
     expect_reject "newline in container_image" \
         '.defaults.container_image = "img:tag
 LLAMA_API_KEY="'
+    expect_reject "reasoning mode llama.cpp does not know" '.defaults.reasoning = "maybe"'
     expect_reject "double quote in reasoning_budget_message" \
         '.defaults.reasoning_budget_message = "say \"hi\""'
 }
@@ -349,7 +352,7 @@ test_example_documents_every_key() {
     for k in port model_file context_per_request parallel_slots kv_unified \
              batch_size ubatch_size threads_gen threads_batch threads_http \
              cache_reuse cache_type_k cache_type_v flash_attn draft_model \
-             draft_max reasoning_budget reasoning_budget_message container_image; do
+             draft_max reasoning reasoning_budget reasoning_budget_message container_image; do
         grep -qE "^\s*$k:" config/llama.example.yaml || missing+=("$k")
     done
     if ((${#missing[@]} > 0)); then
@@ -497,6 +500,7 @@ test_unit_loads_models_without_mmap_by_its_current_name() {
     grep -q -- '--no-mmap' <<<"$unit" && { fail "unit still passes the removed --no-mmap"; return; }
     grep -q -- '-lm none' <<<"$unit"  || { fail "unit does not pass -lm none"; return; }
     grep -q -- '--reasoning-budget ${REASONING_BUDGET}' <<<"$unit" || { fail "unit does not cap reasoning"; return; }
+    grep -q -- '--reasoning ${REASONING}' <<<"$unit" || { fail "unit does not set the reasoning mode"; return; }
     grep -q -- '--reasoning-budget-message "${REASONING_BUDGET_MESSAGE}"' <<<"$unit" || { fail "unit does not end capped reasoning with the message"; return; }
     pass "mmap disabled by -lm none, reasoning capped"
 }
@@ -510,6 +514,17 @@ test_unit_gives_flash_attention_a_value() {
 }
 
 # resources: was dead config until deploy owned the unit. Assert it lands.
+test_router_has_a_backend_for_every_instance() {
+    echo "TEST: the nginx router has one named backend per instance port, and no other"
+    local conf ports
+    conf=$(LLAMA_CONFIG="$FIXTURES/amd.yaml" "$DEPLOY" --render router 2>&1)
+    ports=$(grep -oP 'location @backend_127_0_0_1_\K[0-9]+' <<<"$conf" | sort | tr '\n' ' ')
+    [[ "$ports" == "8082 8083 " ]] || { fail "backends for ports [$ports], want [8082 8083 ]"; return; }
+    grep -q 'proxy_pass http://127.0.0.1:8083;' <<<"$conf" || { fail "8083 backend does not proxy to 8083"; return; }
+    grep -q 'js_content llama_router.routeRequest;' <<<"$conf" || { fail "router lost its njs routing"; return; }
+    pass "one backend per instance"
+}
+
 test_unit_carries_resource_limits() {
     echo "TEST: resources: reaches the unit's Limit* directives"
     local cfg out
@@ -612,7 +627,8 @@ else
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
-             test_a_new_file_takes_its_directorys_owner; do
+             test_a_new_file_takes_its_directorys_owner \
+             test_router_has_a_backend_for_every_instance; do
         "$t"
         echo ""
     done

@@ -1,0 +1,31 @@
+js_import llama_router from @ROUTER_JS@;
+
+server {
+    listen 8080;
+    server_name _;
+
+    location = /health {
+        access_log off;
+        return 200 'OK\n';
+        add_header Content-Type text/plain;
+    }
+
+    location = /v1/models {
+        js_content llama_router.listModels;
+    }
+
+    location = /v1/chat/completions {
+        client_body_buffer_size 16M;
+        client_body_in_single_buffer on;
+        client_max_body_size 32M;
+        js_content llama_router.routeRequest;
+    }
+
+    location /v1/ {
+        client_body_buffer_size 16M;
+        client_body_in_single_buffer on;
+        client_max_body_size 32M;
+        js_content llama_router.routeRequest;
+    }
+@BACKENDS@
+}

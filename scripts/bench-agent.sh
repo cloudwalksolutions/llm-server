@@ -237,8 +237,8 @@ run_session() {
         if [[ "$expect" == "tool_call" ]]; then
             if [[ -z "$R_TOOLARGS" ]]; then
                 n_toolcall_missing+=1
-                printf 'FAIL no tool_call (finish=%s, reasoning=%d chars)\n' \
-                    "$R_FINISH" "${#R_REASONING}"
+                printf 'FAIL no tool_call (finish=%s, reasoning=%d chars) content=[%s]\n' \
+                    "$R_FINISH" "${#R_REASONING}" "$(tr '\n' ' ' <<<"${R_CONTENT:0:160}")"
                 continue
             fi
             if ! jq -e . <<<"$R_TOOLARGS" >/dev/null 2>&1; then

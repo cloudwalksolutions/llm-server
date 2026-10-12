@@ -48,7 +48,7 @@ became 2816 tokens.
 
 ## Key Files
 
-- `config/llama.yaml` — deploy target, `defaults:` + `instances:` (gitignored)
+- `config/llama.yaml` — the live target's `defaults:` + `instances:`, committed; change it by PR and `make deploy`
 - `config/llama.example.yaml` — the schema of record; a test asserts it stays valid
 - `templates/llama-server@.service.in` — the unit template, i.e. the actual argv
 - `scripts/deploy-llama.sh` — renders the unit + instance confs, preflights, restarts only what changed, rolls back on failure

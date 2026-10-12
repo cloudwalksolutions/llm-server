@@ -99,6 +99,8 @@ load_config() {
     ROUTER_MAP=$(yq '.runtime.router_map // "/etc/llama-router/models.json"' "$CONFIG_FILE")
     MODELS_DIR=$(yq '.runtime.models_dir // "/opt/llm/models"' "$CONFIG_FILE")
     UNIT_PATH=$(yq '.runtime.unit_path // "/etc/systemd/system/llama-server@.service"' "$CONFIG_FILE")
+    ROUTER_CONF=$(yq '.runtime.router_conf // "/etc/nginx/conf.d/llama-router.conf"' "$CONFIG_FILE")
+    ROUTER_JS=$(yq '.runtime.router_js // "/etc/nginx/njs/llama-router.js"' "$CONFIG_FILE")
 
     _require_enum "runtime.engine" "$RUNTIME_ENGINE" podman docker || return 1
     _require_enum "runtime.gpu" "$RUNTIME_GPU" amd nvidia || return 1
@@ -207,6 +209,7 @@ load_instance() {
     INST_CACHE_TYPE_V=$(_ivalue "$name" cache_type_v)
     INST_FLASH_ATTN=$(_ivalue "$name" flash_attn)
     INST_DRAFT_MAX=$(_ivalue "$name" draft_max)
+    INST_REASONING=$(_ivalue "$name" reasoning)
     INST_REASONING_BUDGET=$(_ivalue "$name" reasoning_budget)
     INST_REASONING_BUDGET_MESSAGE=$(_ivalue "$name" reasoning_budget_message)
     INST_CONTAINER_IMAGE=$(_ivalue "$name" container_image)
@@ -228,6 +231,7 @@ load_instance() {
     _require_uint "$p.reasoning_budget" "$INST_REASONING_BUDGET" || return 1
     _require_enum "$p.kv_unified" "$INST_KV_UNIFIED" true false || return 1
     _require_enum "$p.flash_attn" "$INST_FLASH_ATTN" true false || return 1
+    _require_enum "$p.reasoning" "$INST_REASONING" on off auto || return 1
     # shellcheck disable=SC2086
     _require_enum "$p.cache_type_k" "$INST_CACHE_TYPE_K" $_KV_CACHE_TYPES || return 1
     # shellcheck disable=SC2086
