@@ -145,6 +145,7 @@ test_defaults_apply() {
     [[ "$(conf_val "$out" THREADS_GEN)" == "12" ]] || { fail "THREADS_GEN not inherited"; return; }
     [[ "$(conf_val "$out" CACHE_TYPE_K)" == "q8_0" ]] || { fail "CACHE_TYPE_K not inherited"; return; }
     [[ "$(conf_val "$out" DRAFT_MAX)" == "16" ]] || { fail "DRAFT_MAX not inherited"; return; }
+    [[ "$(conf_val "$out" REASONING_BUDGET)" == "512" ]] || { fail "REASONING_BUDGET not inherited"; return; }
     pass "defaults inherited"
 }
 
@@ -155,6 +156,7 @@ test_overrides_win() {
     [[ "$(conf_val "$out" THREADS_GEN)" == "8" ]] || { fail "THREADS_GEN override ignored"; return; }
     [[ "$(conf_val "$out" CACHE_TYPE_K)" == "f16" ]] || { fail "CACHE_TYPE_K override ignored"; return; }
     [[ "$(conf_val "$out" DRAFT_MAX)" == "24" ]] || { fail "DRAFT_MAX override ignored"; return; }
+    [[ "$(conf_val "$out" REASONING_BUDGET)" == "0" ]] || { fail "REASONING_BUDGET override ignored"; return; }
     pass "overrides applied"
 }
 
@@ -344,7 +346,7 @@ test_example_documents_every_key() {
     for k in port model_file context_per_request parallel_slots kv_unified \
              batch_size ubatch_size threads_gen threads_batch threads_http \
              cache_reuse cache_type_k cache_type_v flash_attn draft_model \
-             draft_max container_image; do
+             draft_max reasoning_budget container_image; do
         grep -qE "^\s*$k:" config/llama.example.yaml || missing+=("$k")
     done
     if ((${#missing[@]} > 0)); then
@@ -457,6 +459,24 @@ test_unit_reflects_engine_and_gpu() {
     pass "engine, GPU flags and command word all follow runtime.*"
 }
 
+test_unit_loads_models_without_mmap_by_its_current_name() {
+    echo "TEST: the unit disables mmap with --load-mode none, not the removed --no-mmap"
+    local unit
+    unit=$(render_unit amd)
+    grep -q -- '--no-mmap' <<<"$unit" && { fail "unit still passes the removed --no-mmap"; return; }
+    grep -q -- '-lm none' <<<"$unit"  || { fail "unit does not pass -lm none"; return; }
+    grep -q -- '--reasoning-budget ${REASONING_BUDGET}' <<<"$unit" || { fail "unit does not cap reasoning"; return; }
+    pass "mmap disabled by -lm none, reasoning capped"
+}
+
+test_unit_gives_flash_attention_a_value() {
+    echo "TEST: flash_attn: true renders -fa on"
+    local unit
+    unit=$(render_unit amd)
+    grep -q 'FA_ARG="-fa on"' <<<"$unit" || { fail "unit renders a bare -fa"; return; }
+    pass "flash attention flag carries its value"
+}
+
 # resources: was dead config until deploy owned the unit. Assert it lands.
 test_unit_carries_resource_limits() {
     echo "TEST: resources: reaches the unit's Limit* directives"
@@ -556,7 +576,9 @@ else
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \
-             test_sudo_gets_the_password_over_key_auth; do
+             test_sudo_gets_the_password_over_key_auth \
+             test_unit_loads_models_without_mmap_by_its_current_name \
+             test_unit_gives_flash_attention_a_value; do
         "$t"
         echo ""
     done

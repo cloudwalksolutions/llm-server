@@ -40,8 +40,8 @@ assert_eq() {
 # upstream bugs where a partial fragment like `{` is flushed before a 500.
 assert_streamed_tool_call() {
     local name="$1" port="$2" key="$3" body out args fr
-    body=$(jq -nc --arg m "$name" '{
-        model: $m, stream: true, max_tokens: 96, tool_choice: "required",
+    body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" '{
+        model: $m, stream: true, max_tokens: $mt, tool_choice: "required",
         messages: [{role: "user", content: "What is the weather in Paris?"}],
         tools: [{type: "function", function: {
             name: "get_weather",
@@ -125,6 +125,7 @@ for name in "${INSTANCE_NAMES[@]}"; do
     else
         assert_eq "live -c"  "$(grep -oP '(?:^|\s)-c\s+\K[0-9]+' <<<"$cmdline" | head -1)"  "$INST_TOTAL_CONTEXT"
         assert_eq "live -np" "$(grep -oP '(?:^|\s)-np\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_PARALLEL_SLOTS"
+        assert_eq "live --reasoning-budget" "$(grep -oP '(?:^|\s)--reasoning-budget\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_REASONING_BUDGET"
     fi
 
     # What a client actually gets. Read on the target's loopback port, so this

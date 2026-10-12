@@ -103,7 +103,9 @@ defaults:
   draft_model: ""
   draft_max: 16
 
-  container_image: docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv
+  reasoning_budget: 512
+
+  container_image: us-east1-docker.pkg.dev/on-prem-cw-admin-project/llm-images/amd-strix-halo-toolboxes:llamacpp-b11559
 
 # One entry per model. Each becomes llama-server@<name>.service reading
 # <instances_dir>/<name>.conf, and each must already exist on the target —

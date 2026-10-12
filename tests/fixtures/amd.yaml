@@ -22,6 +22,7 @@ defaults:
   flash_attn: true
   draft_model: ""
   draft_max: 16
+  reasoning_budget: 512
   container_image: example.invalid/llama:test
 
 instances:
@@ -46,3 +47,4 @@ instances:
     threads_gen: 8
     draft_model: Draft-B.gguf
     draft_max: 24
+    reasoning_budget: 0
