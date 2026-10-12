@@ -41,7 +41,7 @@ assert_eq() {
 assert_streamed_tool_call() {
     local name="$1" port="$2" key="$3" body out args fr
     body=$(jq -nc --arg m "$name" '{
-        model: $m, stream: true, max_tokens: 96, tool_choice: "required",
+        model: $m, stream: true, max_tokens: 1024, tool_choice: "required",
         messages: [{role: "user", content: "What is the weather in Paris?"}],
         tools: [{type: "function", function: {
             name: "get_weather",
