@@ -146,6 +146,7 @@ test_defaults_apply() {
     [[ "$(conf_val "$out" CACHE_TYPE_K)" == "q8_0" ]] || { fail "CACHE_TYPE_K not inherited"; return; }
     [[ "$(conf_val "$out" DRAFT_MAX)" == "16" ]] || { fail "DRAFT_MAX not inherited"; return; }
     [[ "$(conf_val "$out" REASONING_BUDGET)" == "512" ]] || { fail "REASONING_BUDGET not inherited"; return; }
+    [[ "$(conf_val "$out" REASONING_BUDGET_MESSAGE)" == '"Answer now."' ]] || { fail "REASONING_BUDGET_MESSAGE not inherited"; return; }
     pass "defaults inherited"
 }
 
@@ -260,6 +261,8 @@ EVIL=1"'
     expect_reject "newline in container_image" \
         '.defaults.container_image = "img:tag
 LLAMA_API_KEY="'
+    expect_reject "double quote in reasoning_budget_message" \
+        '.defaults.reasoning_budget_message = "say \"hi\""'
 }
 
 # llama.cpp's own default for --cache-reuse is 0 (disabled). The schema could
@@ -346,7 +349,7 @@ test_example_documents_every_key() {
     for k in port model_file context_per_request parallel_slots kv_unified \
              batch_size ubatch_size threads_gen threads_batch threads_http \
              cache_reuse cache_type_k cache_type_v flash_attn draft_model \
-             draft_max reasoning_budget container_image; do
+             draft_max reasoning_budget reasoning_budget_message container_image; do
         grep -qE "^\s*$k:" config/llama.example.yaml || missing+=("$k")
     done
     if ((${#missing[@]} > 0)); then
@@ -477,6 +480,7 @@ test_unit_loads_models_without_mmap_by_its_current_name() {
     grep -q -- '--no-mmap' <<<"$unit" && { fail "unit still passes the removed --no-mmap"; return; }
     grep -q -- '-lm none' <<<"$unit"  || { fail "unit does not pass -lm none"; return; }
     grep -q -- '--reasoning-budget ${REASONING_BUDGET}' <<<"$unit" || { fail "unit does not cap reasoning"; return; }
+    grep -q -- '--reasoning-budget-message "${REASONING_BUDGET_MESSAGE}"' <<<"$unit" || { fail "unit does not end capped reasoning with the message"; return; }
     pass "mmap disabled by -lm none, reasoning capped"
 }
 

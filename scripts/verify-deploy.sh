@@ -39,8 +39,8 @@ assert_eq() {
 # Reassembling the streamed argument deltas also catches the live class of
 # upstream bugs where a partial fragment like `{` is flushed before a 500.
 assert_streamed_tool_call() {
-    local name="$1" port="$2" key="$3" body out args fr
-    body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" '{
+    local name="$1" port="$2" key="$3" extra="${4:-{\}}" label="${5:-streamed tool call}" body out args fr
+    body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" --argjson extra "$extra" '{
         model: $m, stream: true, max_tokens: $mt, tool_choice: "required",
         messages: [{role: "user", content: "What is the weather in Paris?"}],
         tools: [{type: "function", function: {
@@ -48,7 +48,7 @@ assert_streamed_tool_call() {
             description: "Get the current weather for a city",
             parameters: {type: "object",
                          properties: {city: {type: "string"}},
-                         required: ["city"]}}}]}')
+                         required: ["city"]}}}]} + $extra')
 
     out=$(remote_exec "curl -s --max-time 120 -H 'Authorization: Bearer $key' \
         -H 'Content-Type: application/json' -d $(_shq "$body") \
@@ -70,15 +70,15 @@ assert_streamed_tool_call() {
     fr=$(jq -r 'select(.choices[0].finish_reason != null) | .choices[0].finish_reason' <<<"$frames" 2>/dev/null | head -1)
 
     if [[ -z "$args" ]]; then
-        bad "streamed tool call produced no tool_calls arguments (finish_reason=${fr:-none})"
+        bad "$label produced no tool_calls arguments (finish_reason=${fr:-none})"
         return
     fi
     if ! jq -e 'has("city")' <<<"$args" >/dev/null 2>&1; then
         bad "streamed tool args are not valid JSON with the required key: [$args]"
         return
     fi
-    assert_eq "streamed tool call finish_reason" "$fr" "tool_calls"
-    ok "streamed tool args parse as JSON: $args"
+    assert_eq "$label finish_reason" "$fr" "tool_calls"
+    ok "$label args parse as JSON: $args"
 
     # More than one SSE frame is what "the answer arrives in more than one
     # piece" means from the app side; a single frame means buffering.
@@ -126,6 +126,11 @@ for name in "${INSTANCE_NAMES[@]}"; do
         assert_eq "live -c"  "$(grep -oP '(?:^|\s)-c\s+\K[0-9]+' <<<"$cmdline" | head -1)"  "$INST_TOTAL_CONTEXT"
         assert_eq "live -np" "$(grep -oP '(?:^|\s)-np\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_PARALLEL_SLOTS"
         assert_eq "live --reasoning-budget" "$(grep -oP '(?:^|\s)--reasoning-budget\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_REASONING_BUDGET"
+        if grep -qF -- "--reasoning-budget-message $INST_REASONING_BUDGET_MESSAGE" <<<"$cmdline"; then
+            ok "live --reasoning-budget-message"
+        else
+            bad "live --reasoning-budget-message is not '$INST_REASONING_BUDGET_MESSAGE'"
+        fi
     fi
 
     # What a client actually gets. Read on the target's loopback port, so this
@@ -154,6 +159,8 @@ for name in "${INSTANCE_NAMES[@]}"; do
     fi
 
     assert_streamed_tool_call "$name" "$INST_PORT" "$key"
+    assert_streamed_tool_call "$name" "$INST_PORT" "$key" \
+        '{"reasoning_budget_tokens": 0, "max_tokens": 64}' "tool call with a per-request budget of 0"
     echo ""
 done
 

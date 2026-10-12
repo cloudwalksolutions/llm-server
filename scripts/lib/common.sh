@@ -208,6 +208,7 @@ load_instance() {
     INST_FLASH_ATTN=$(_ivalue "$name" flash_attn)
     INST_DRAFT_MAX=$(_ivalue "$name" draft_max)
     INST_REASONING_BUDGET=$(_ivalue "$name" reasoning_budget)
+    INST_REASONING_BUDGET_MESSAGE=$(_ivalue "$name" reasoning_budget_message)
     INST_CONTAINER_IMAGE=$(_ivalue "$name" container_image)
 
     INST_DRAFT_MODEL=$(_ivalue "$name" draft_model)
@@ -238,6 +239,12 @@ load_instance() {
     _require_no_control_chars "$p.model_file"      "$INST_MODEL_FILE"      || return 1
     _require_no_control_chars "$p.container_image" "$INST_CONTAINER_IMAGE" || return 1
     _require_no_control_chars "$p.draft_model"     "$INST_DRAFT_MODEL"     || return 1
+    _require_str "$p.reasoning_budget_message" "$INST_REASONING_BUDGET_MESSAGE" || return 1
+    _require_no_control_chars "$p.reasoning_budget_message" "$INST_REASONING_BUDGET_MESSAGE" || return 1
+    if [[ "$INST_REASONING_BUDGET_MESSAGE" == *[\"\\\$\`]* ]]; then
+        _cfg_err "$p.reasoning_budget_message may not contain \", \\, \$ or a backtick"
+        return 1
+    fi
     if ((INST_UBATCH_SIZE > INST_BATCH_SIZE)); then
         _cfg_err "$p: ubatch_size ($INST_UBATCH_SIZE) must not exceed batch_size ($INST_BATCH_SIZE)"
         return 1
