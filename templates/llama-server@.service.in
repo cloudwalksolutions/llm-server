@@ -40,7 +40,7 @@ ExecStartPre=-@ENGINE_BIN@ rm -f llama-server-%i
 # to ENABLED. See the flash_attn comment in config/llama.example.yaml.
 ExecStart=/bin/sh -c '\
     FA_ARG=""; \
-    [ "$FLASH_ATTN" = "true" ] && FA_ARG="-fa"; \
+    [ "$FLASH_ATTN" = "true" ] && FA_ARG="-fa on"; \
     DRAFT_ARGS=""; \
     if [ -n "$DRAFT_MODEL" ] && [ "$DRAFT_MODEL" != "null" ]; then \
         DRAFT_ARGS="-md /models/$DRAFT_MODEL --draft-max $DRAFT_MAX -ngld 999"; \
@@ -55,7 +55,7 @@ ExecStart=/bin/sh -c '\
         ${CONTAINER_IMAGE} \
         @SERVER_CMD@ \
             --alias %i \
-            --no-mmap \
+            -lm none \
             -ngl 999 $FA_ARG \
             -c ${CONTEXT_SIZE} \
             -np ${PARALLEL_SLOTS} \

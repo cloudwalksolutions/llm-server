@@ -457,6 +457,25 @@ test_unit_reflects_engine_and_gpu() {
     pass "engine, GPU flags and command word all follow runtime.*"
 }
 
+# Upstream removed --no-mmap; a server passed it refuses to start.
+test_unit_loads_models_without_mmap_by_its_current_name() {
+    echo "TEST: the unit disables mmap with --load-mode none, not the removed --no-mmap"
+    local unit
+    unit=$(render_unit amd)
+    grep -q -- '--no-mmap' <<<"$unit" && { fail "unit still passes the removed --no-mmap"; return; }
+    grep -q -- '-lm none' <<<"$unit"  || { fail "unit does not pass -lm none"; return; }
+    pass "mmap disabled by -lm none"
+}
+
+# Current llama.cpp takes -fa on|off|auto; a bare -fa swallows the next flag as its value.
+test_unit_gives_flash_attention_a_value() {
+    echo "TEST: flash_attn: true renders -fa on"
+    local unit
+    unit=$(render_unit amd)
+    grep -q 'FA_ARG="-fa on"' <<<"$unit" || { fail "unit renders a bare -fa"; return; }
+    pass "flash attention flag carries its value"
+}
+
 # resources: was dead config until deploy owned the unit. Assert it lands.
 test_unit_carries_resource_limits() {
     echo "TEST: resources: reaches the unit's Limit* directives"
@@ -556,7 +575,9 @@ else
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \
-             test_sudo_gets_the_password_over_key_auth; do
+             test_sudo_gets_the_password_over_key_auth \
+             test_unit_loads_models_without_mmap_by_its_current_name \
+             test_unit_gives_flash_attention_a_value; do
         "$t"
         echo ""
     done
