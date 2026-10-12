@@ -378,6 +378,17 @@ test_remote_quoting_is_safe() {
     pass "_shq round-trips and executes nothing"
 }
 
+test_router_map_gains_a_new_instance_and_keeps_the_rest() {
+    echo "TEST: adding an instance routes its name without disturbing existing routes"
+    local before after
+    before='{"a":"127.0.0.1:8081","_default":"127.0.0.1:8081"}'
+    after=$(router_map_with "$before" b 8084)
+    [[ "$(jq -r .b <<<"$after")" == "127.0.0.1:8084" ]] || { fail "new instance not routed: $after"; return; }
+    [[ "$(jq -r .a <<<"$after")" == "127.0.0.1:8081" ]] || { fail "existing route changed: $after"; return; }
+    [[ "$(jq -r ._default <<<"$after")" == "127.0.0.1:8081" ]] || { fail "_default changed: $after"; return; }
+    pass "new route added, others untouched"
+}
+
 test_agent_gate_fails_a_run_that_stopped_early() {
     echo "TEST: the agent benchmark passes only when every planned turn ran clean"
     local result
@@ -578,7 +589,8 @@ else
              test_agent_gate_fails_a_run_that_stopped_early \
              test_sudo_gets_the_password_over_key_auth \
              test_unit_loads_models_without_mmap_by_its_current_name \
-             test_unit_gives_flash_attention_a_value; do
+             test_unit_gives_flash_attention_a_value \
+             test_router_map_gains_a_new_instance_and_keeps_the_rest; do
         "$t"
         echo ""
     done
