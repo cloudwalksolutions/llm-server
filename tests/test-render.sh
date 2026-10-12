@@ -401,6 +401,16 @@ test_a_new_file_takes_its_directorys_owner() {
     pass "new file owned like its directory"
 }
 
+test_router_map_drops_a_retired_instance_and_keeps_the_rest() {
+    echo "TEST: retiring an instance removes only its route"
+    local after
+    after=$(router_map_without '{"a":"127.0.0.1:8081","b":"127.0.0.1:8082","_default":"127.0.0.1:8081"}' b)
+    [[ "$(jq -r 'has("b")' <<<"$after")" == "false" ]] || { fail "retired route kept: $after"; return; }
+    [[ "$(jq -r .a <<<"$after")" == "127.0.0.1:8081" ]] || { fail "other route changed: $after"; return; }
+    [[ "$(jq -r ._default <<<"$after")" == "127.0.0.1:8081" ]] || { fail "_default changed: $after"; return; }
+    pass "retired route removed, others untouched"
+}
+
 test_router_map_gains_a_new_instance_and_keeps_the_rest() {
     echo "TEST: adding an instance routes its name without disturbing existing routes"
     local before after
@@ -628,7 +638,8 @@ else
              test_unit_gives_flash_attention_a_value \
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
              test_a_new_file_takes_its_directorys_owner \
-             test_router_has_a_backend_for_every_instance; do
+             test_router_has_a_backend_for_every_instance \
+             test_router_map_drops_a_retired_instance_and_keeps_the_rest; do
         "$t"
         echo ""
     done

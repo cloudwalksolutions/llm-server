@@ -438,3 +438,7 @@ agent_gate() {
 router_map_with() {
     jq -c --arg n "$2" --arg b "127.0.0.1:$3" '. + {($n): $b}' <<<"$1"
 }
+
+router_map_without() {
+    jq -c --arg n "$2" 'del(.[$n])' <<<"$1"
+}

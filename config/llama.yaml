@@ -34,12 +34,6 @@ instances:
     parallel_slots: 1
     threads_http: 4
 
-  qwen3-14b:
-    port: 8082
-    model_file: Qwen3-14B-Q4_K_M.gguf
-    context_per_request: 16384
-    parallel_slots: 8
-
   qwen3-8b:
     port: 8083
     model_file: Qwen3-8B-Q4_K_M.gguf
