@@ -457,7 +457,6 @@ test_unit_reflects_engine_and_gpu() {
     pass "engine, GPU flags and command word all follow runtime.*"
 }
 
-# Upstream removed --no-mmap; a server passed it refuses to start.
 test_unit_loads_models_without_mmap_by_its_current_name() {
     echo "TEST: the unit disables mmap with --load-mode none, not the removed --no-mmap"
     local unit
@@ -467,7 +466,6 @@ test_unit_loads_models_without_mmap_by_its_current_name() {
     pass "mmap disabled by -lm none"
 }
 
-# Current llama.cpp takes -fa on|off|auto; a bare -fa swallows the next flag as its value.
 test_unit_gives_flash_attention_a_value() {
     echo "TEST: flash_attn: true renders -fa on"
     local unit

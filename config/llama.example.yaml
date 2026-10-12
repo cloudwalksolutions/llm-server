@@ -103,9 +103,6 @@ defaults:
   draft_model: ""
   draft_max: 16
 
-  # Pinned by digest to our own copy: kyuz0 rebuilds this on every llama.cpp master commit and
-  # keeps only its three newest dated tags. llama.cpp build 11559. Upgrade by copying a newer
-  # dated tag into llm-images and passing make verify + make bench-agent (both fixtures).
   container_image: us-east1-docker.pkg.dev/on-prem-cw-admin-project/llm-images/amd-strix-halo-toolboxes@sha256:f75851cd80e1083165525fd4dd3c886010e4b347c455450c0558b22577b7bc81
 
 # One entry per model. Each becomes llama-server@<name>.service reading
