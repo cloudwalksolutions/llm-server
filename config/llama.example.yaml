@@ -134,6 +134,11 @@ instances:
     # parallel_slots x context_per_request.
     parallel_slots: 8
 
+    # Optional, per instance only. Unset keys keep the GGUF's own values.
+    # Keys: temperature, top_p, top_k, min_p, presence_penalty.
+    sampling:
+      presence_penalty: 1.5
+
   # Instances inherit defaults and override only what differs.
   my-small-model:
     port: 8083

@@ -70,7 +70,7 @@ assert_streamed_tool_call() {
     fr=$(jq -r 'select(.choices[0].finish_reason != null) | .choices[0].finish_reason' <<<"$frames" 2>/dev/null | head -1)
 
     if [[ -z "$args" ]]; then
-        bad "$label produced no tool_calls arguments (finish_reason=${fr:-none})"
+        bad "$label produced no tool_calls arguments (finish_reason=${fr:-none}) content=[$(jq -rj '.choices[0].delta.content // empty' <<<"$frames" 2>/dev/null | head -c 300)]"
         return
     fi
     if ! jq -e 'has("city")' <<<"$args" >/dev/null 2>&1; then
@@ -89,6 +89,30 @@ assert_streamed_tool_call() {
     else
         ok "streamed in $n frames"
     fi
+}
+
+# Open WebUI on the llama.cpp provider sends earlier thinking back as
+# reasoning_content; the template must put it back inside <think>, across turns.
+assert_replays_reasoning() {
+    local port="$1" key="$2" body prompt
+    body=$(jq -nc '{messages: [
+        {role: "user", content: "What is the weather in Paris?"},
+        {role: "assistant", content: "", reasoning_content: "replay-marker-tool",
+         tool_calls: [{id: "c1", type: "function",
+                       function: {name: "get_weather", arguments: "{\"city\":\"Paris\"}"}}]},
+        {role: "tool", tool_call_id: "c1", content: "sunny"},
+        {role: "assistant", content: "It is sunny.", reasoning_content: "replay-marker-answer"},
+        {role: "user", content: "And tomorrow?"}]}')
+    prompt=$(remote_exec "curl -s --max-time 30 -H 'Authorization: Bearer $key' \
+        -H 'Content-Type: application/json' -d $(_shq "$body") \
+        http://127.0.0.1:$port/apply-template" 2>/dev/null | jq -r '.prompt // empty' 2>/dev/null)
+    for m in replay-marker-tool replay-marker-answer; do
+        if grep -Pzq "<think>\\s*$m\\s*</think>" <<<"$prompt"; then
+            ok "earlier thinking replayed: $m"
+        else
+            bad "earlier thinking not replayed inside <think>: $m"
+        fi
+    done
 }
 
 echo -e "${BLUE}Verifying $REMOTE_USER@$REMOTE_HOST${NC}\n"
@@ -136,13 +160,22 @@ for name in "${INSTANCE_NAMES[@]}"; do
     # What a client actually gets. Read on the target's loopback port, so this
     # works regardless of what the reverse proxy exposes.
     key=$(remote_conf_value "$conf" LLAMA_API_KEY)
-    slot_ctx=$(remote_exec "curl -sf -H 'Authorization: Bearer $key' http://127.0.0.1:$INST_PORT/props" 2>/dev/null \
-        | jq -r '.default_generation_settings.n_ctx // empty' 2>/dev/null || echo "")
+    props=$(remote_exec "curl -sf -H 'Authorization: Bearer $key' http://127.0.0.1:$INST_PORT/props" 2>/dev/null || echo "")
+    slot_ctx=$(jq -r '.default_generation_settings.n_ctx // empty' <<<"$props" 2>/dev/null || echo "")
     if [[ -n "$slot_ctx" ]]; then
         assert_eq "effective n_ctx/request" "$slot_ctx" "$INST_CONTEXT_PER_REQUEST"
     else
         bad "could not read /props on 127.0.0.1:$INST_PORT"
     fi
+    for k in $(jq -r 'keys[]' <<<"$INST_SAMPLING"); do
+        have=$(jq -r --arg k "$k" '.default_generation_settings.params[$k] // "unset"' <<<"$props" 2>/dev/null)
+        want=$(jq -r --arg k "$k" '.[$k]' <<<"$INST_SAMPLING")
+        if [[ "$have" != "unset" ]] && jq -en --argjson h "$have" --argjson w "$want" '($h - $w) | fabs < 1e-6' >/dev/null; then
+            ok "effective $k = $have"
+        else
+            bad "effective $k: want '$want', got '$have'"
+        fi
+    done
 
     # /props reports one number for the whole server. /slots reports what each
     # slot actually got, so it catches a divergence /props would average away,
@@ -161,6 +194,20 @@ for name in "${INSTANCE_NAMES[@]}"; do
     assert_streamed_tool_call "$name" "$INST_PORT" "$key"
     assert_streamed_tool_call "$name" "$INST_PORT" "$key" \
         '{"reasoning_budget_tokens": 0, "max_tokens": 128}' "tool call with a per-request budget of 0"
+    if ((INST_PARALLEL_SLOTS > 1)); then
+        tmp=$(mktemp -d)
+        for s in 1 2; do
+            (assert_streamed_tool_call "$name" "$INST_PORT" "$key" '{}' "concurrent tool call $s/2") >"$tmp/$s" &
+        done
+        wait
+        cat "$tmp/1" "$tmp/2"
+        PASSED=$((PASSED + $(cat "$tmp/1" "$tmp/2" | grep -c PASS)))
+        FAILED=$((FAILED + $(cat "$tmp/1" "$tmp/2" | grep -c FAIL)))
+        rm -rf "$tmp"
+    fi
+    if jq -e '.chat_template_caps.supports_preserve_reasoning == true' <<<"$props" >/dev/null 2>&1; then
+        assert_replays_reasoning "$INST_PORT" "$key"
+    fi
     echo ""
 done
 
