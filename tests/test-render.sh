@@ -381,6 +381,23 @@ test_remote_quoting_is_safe() {
     pass "_shq round-trips and executes nothing"
 }
 
+test_a_new_file_takes_its_directorys_owner() {
+    echo "TEST: a privileged write of a file that does not exist yet keeps it readable by the deploy user"
+    local ran
+    ran=$(
+        remote_exec() {
+            case "$1" in
+                "stat -c '%U:%G' /opt/llm/instances/new.conf"*) return 1 ;;
+                "stat -c '%U:%G' /opt/llm/instances"*) echo "deployer:deployers" ;;
+            esac
+        }
+        remote_exec_sudo() { printf '%s\n' "$*"; }
+        echo "X=1" | remote_write_sudo /opt/llm/instances/new.conf 640
+    )
+    [[ "$ran" == *"install -m 640 -o deployer -g deployers"* ]] || { fail "new file not given the directory's owner: $ran"; return; }
+    pass "new file owned like its directory"
+}
+
 test_router_map_gains_a_new_instance_and_keeps_the_rest() {
     echo "TEST: adding an instance routes its name without disturbing existing routes"
     local before after
@@ -594,7 +611,8 @@ else
              test_sudo_gets_the_password_over_key_auth \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
-             test_router_map_gains_a_new_instance_and_keeps_the_rest; do
+             test_router_map_gains_a_new_instance_and_keeps_the_rest \
+             test_a_new_file_takes_its_directorys_owner; do
         "$t"
         echo ""
     done

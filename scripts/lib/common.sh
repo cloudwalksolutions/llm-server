@@ -377,7 +377,8 @@ remote_write_sudo() {
     tmp="/tmp/.llama-deploy.$$.${RANDOM}"
 
     remote_exec "cat > $tmp" || return 1
-    owner=$(remote_exec "stat -c '%U:%G' $dest 2>/dev/null" || echo "")
+    owner=$(remote_exec "stat -c '%U:%G' $dest 2>/dev/null" \
+         || remote_exec "stat -c '%U:%G' ${dest%/*} 2>/dev/null" || echo "")
     if [[ -n "$owner" ]]; then
         remote_exec_sudo "install -m $mode -o ${owner%%:*} -g ${owner##*:} $tmp $dest && rm -f $tmp"
     else
