@@ -408,16 +408,7 @@ fi
 # ── Gate ──────────────────────────────────────────────────────────────────────
 # Every correctness counter must be zero. No tolerance band: these are binary
 # properties, so a nonzero value is a real regression, never noise.
-FAILS=$(jq -r '[.correctness | to_entries[] | select(.key != "turns" and .value != 0)]
-               | map("\(.key)=\(.value)") | join(" ")' "$RESULT")
-if [[ -n "$FAILS" ]]; then
-    echo -e "${RED}FAIL${NC} $FAILS"
-    exit 1
-fi
-if ((n_turns == 0)); then
-    echo -e "${RED}FAIL${NC} no turns ran"
-    exit 1
-fi
+agent_gate "$RESULT" $((N_TURNS * ITERATIONS * 2)) || exit 1
 
 # Warm turns must actually reuse the cache, or the multi-turn story is broken
 # even though every turn "worked".

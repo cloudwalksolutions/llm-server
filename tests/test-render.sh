@@ -376,6 +376,25 @@ test_remote_quoting_is_safe() {
     pass "_shq round-trips and executes nothing"
 }
 
+test_agent_gate_fails_a_run_that_stopped_early() {
+    echo "TEST: the agent benchmark passes only when every planned turn ran clean"
+    local result
+    result=$(mktemp)
+    echo '{"correctness":{"turns":1,"httpErrors":0}}' > "$result"
+    if agent_gate "$result" 24 >/dev/null; then
+        fail "a run that stopped after 1 of 24 turns passed"
+    else
+        pass "a run that stopped early fails"
+    fi
+    echo '{"correctness":{"turns":24,"httpErrors":0}}' > "$result"
+    if agent_gate "$result" 24 >/dev/null; then
+        pass "a complete clean run passes"
+    else
+        fail "a complete clean run failed"
+    fi
+    rm -f "$result"
+}
+
 test_sudo_gets_the_password_over_key_auth() {
     echo "TEST: key auth still feeds SSH_PASS to sudo, which has no tty to prompt on"
     local sent quoted
@@ -536,6 +555,7 @@ else
              test_example_config_is_valid \
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
+             test_agent_gate_fails_a_run_that_stopped_early \
              test_sudo_gets_the_password_over_key_auth; do
         "$t"
         echo ""
