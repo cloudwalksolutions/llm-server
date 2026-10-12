@@ -395,6 +395,22 @@ test_agent_gate_fails_a_run_that_stopped_early() {
     rm -f "$result"
 }
 
+test_sudo_gets_the_password_over_key_auth() {
+    echo "TEST: key auth still feeds SSH_PASS to sudo, which has no tty to prompt on"
+    local sent quoted
+    quoted=$(_shq "pa ss'word")
+    sent=$(
+        _ssh_run() { printf '%s' "${*: -1}"; }
+        SSH_AUTH=key SSH_PASS="pa ss'word" REMOTE_USER=u REMOTE_HOST=h
+        remote_exec_sudo "true"
+    )
+    if [[ "$sent" == *"| sudo -S bash -c"* && "$sent" == *"$quoted"* ]]; then
+        pass "key auth pipes the password to sudo -S"
+    else
+        fail "key auth ran: $sent"
+    fi
+}
+
 # ── Unit template ─────────────────────────────────────────────────────────────
 render_unit() { LLAMA_CONFIG="$FIXTURES/$1.yaml" "$DEPLOY" --render unit 2>&1; }
 
@@ -539,7 +555,8 @@ else
              test_example_config_is_valid \
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
-             test_agent_gate_fails_a_run_that_stopped_early; do
+             test_agent_gate_fails_a_run_that_stopped_early \
+             test_sudo_gets_the_password_over_key_auth; do
         "$t"
         echo ""
     done

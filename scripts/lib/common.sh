@@ -353,7 +353,7 @@ remote_exec_sudo() {
         else
             sudo bash -c "$*"
         fi
-    elif [[ "$SSH_AUTH" == "password" ]]; then
+    elif [[ -n "${SSH_PASS:-}" ]]; then
         _ssh_run "$REMOTE_USER@$REMOTE_HOST" "printf '%s\n' $(_shq "$SSH_PASS") | sudo -S bash -c $(_shq "$*")"
     else
         _ssh_run "$REMOTE_USER@$REMOTE_HOST" "sudo bash -c $(_shq "$*")"
