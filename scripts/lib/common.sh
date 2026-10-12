@@ -207,6 +207,7 @@ load_instance() {
     INST_CACHE_TYPE_V=$(_ivalue "$name" cache_type_v)
     INST_FLASH_ATTN=$(_ivalue "$name" flash_attn)
     INST_DRAFT_MAX=$(_ivalue "$name" draft_max)
+    INST_REASONING_BUDGET=$(_ivalue "$name" reasoning_budget)
     INST_CONTAINER_IMAGE=$(_ivalue "$name" container_image)
 
     INST_DRAFT_MODEL=$(_ivalue "$name" draft_model)
@@ -223,6 +224,7 @@ load_instance() {
     _require_int "$p.threads_http" "$INST_THREADS_HTTP" || return 1
     _require_uint "$p.cache_reuse" "$INST_CACHE_REUSE" || return 1
     _require_uint "$p.draft_max" "$INST_DRAFT_MAX" || return 1
+    _require_uint "$p.reasoning_budget" "$INST_REASONING_BUDGET" || return 1
     _require_enum "$p.kv_unified" "$INST_KV_UNIFIED" true false || return 1
     _require_enum "$p.flash_attn" "$INST_FLASH_ATTN" true false || return 1
     # shellcheck disable=SC2086

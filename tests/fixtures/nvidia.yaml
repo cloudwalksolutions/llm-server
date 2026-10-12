@@ -22,6 +22,7 @@ defaults:
   flash_attn: false
   draft_model: ""
   draft_max: 16
+  reasoning_budget: 512
   container_image: example.invalid/llama:cuda
 
 instances:

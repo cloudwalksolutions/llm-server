@@ -69,6 +69,7 @@ ExecStart=/bin/sh -c '\
             --threads-http ${THREADS_HTTP} \
             --cache-type-k ${CACHE_TYPE_K} \
             --cache-type-v ${CACHE_TYPE_V} $DRAFT_ARGS \
+            --reasoning-budget ${REASONING_BUDGET} \
             -m /models/${MODEL_FILE} \
             --host 0.0.0.0 \
             --port ${LLAMA_PORT} \
