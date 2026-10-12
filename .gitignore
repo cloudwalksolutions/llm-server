@@ -7,11 +7,6 @@
 .env.*
 *.env.bak*
 
-# Deploy target config. See the note in specs/context-window-deploy.md about
-# tracking this instead — it holds no secrets, and ignoring it is why the
-# deployed config drifted unnoticed.
-**/llama.yaml
-
 # Benchmark runs are transient; bench/baseline.json is committed on purpose
 # so an accepted perf trade shows up as a reviewable diff.
 bench/*.json

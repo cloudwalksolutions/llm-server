@@ -160,7 +160,7 @@ for name in "${INSTANCE_NAMES[@]}"; do
 
     assert_streamed_tool_call "$name" "$INST_PORT" "$key"
     assert_streamed_tool_call "$name" "$INST_PORT" "$key" \
-        '{"reasoning_budget_tokens": 0, "max_tokens": 64}' "tool call with a per-request budget of 0"
+        '{"reasoning_budget_tokens": 0, "max_tokens": 128}' "tool call with a per-request budget of 0"
     echo ""
 done
 

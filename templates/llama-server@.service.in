@@ -69,6 +69,7 @@ ExecStart=/bin/sh -c '\
             --threads-http ${THREADS_HTTP} \
             --cache-type-k ${CACHE_TYPE_K} \
             --cache-type-v ${CACHE_TYPE_V} $DRAFT_ARGS \
+            --reasoning ${REASONING} \
             --reasoning-budget ${REASONING_BUDGET} \
             --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}" \
             -m /models/${MODEL_FILE} \

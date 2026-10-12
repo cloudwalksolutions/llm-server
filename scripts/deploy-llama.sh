@@ -60,6 +60,7 @@ CACHE_TYPE_V=$INST_CACHE_TYPE_V
 FLASH_ATTN=$INST_FLASH_ATTN
 DRAFT_MODEL=$INST_DRAFT_MODEL
 DRAFT_MAX=$INST_DRAFT_MAX
+REASONING=$INST_REASONING
 REASONING_BUDGET=$INST_REASONING_BUDGET
 REASONING_BUDGET_MESSAGE="$INST_REASONING_BUDGET_MESSAGE"
 LLAMA_API_KEY=$api_key
@@ -73,6 +74,34 @@ EOF
 # per-instance must go through the conf file above, which systemd expands as
 # ${VAR}, and those are deliberately left untouched here.
 UNIT_TEMPLATE="$SCRIPT_DIR/../templates/llama-server@.service.in"
+ROUTER_TEMPLATE="$SCRIPT_DIR/../templates/llama-router.conf.in"
+ROUTER_JS_SOURCE="$SCRIPT_DIR/../templates/llama-router.js"
+
+render_router() {
+    local backends="" port name body
+    for port in $(for name in "${INSTANCE_NAMES[@]}"; do load_instance "$name" && echo "$INST_PORT"; done | sort -un); do
+        backends+="
+    location @backend_127_0_0_1_$port {
+        internal;
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Connection \"\";
+        proxy_set_header Host \$host;
+        proxy_set_header Authorization \$http_authorization;
+        proxy_buffering off;
+        proxy_request_buffering on;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        chunked_transfer_encoding on;
+        gzip off;
+    }"
+    done
+    body=$(<"$ROUTER_TEMPLATE")
+    body="${body//@ROUTER_JS@/$ROUTER_JS}"
+    body="${body//@BACKENDS@/$backends}"
+    printf '%s\n' "$body"
+}
 
 render_unit() {
     [[ -f "$UNIT_TEMPLATE" ]] || {
@@ -125,6 +154,10 @@ if [[ "$MODE" == "render" ]]; then
     [[ -n "$RENDER_ONE" ]] || { echo "--render needs an instance name" >&2; exit 2; }
     if [[ "$RENDER_ONE" == "--unit" || "$RENDER_ONE" == "unit" ]]; then
         render_unit
+        exit 0
+    fi
+    if [[ "$RENDER_ONE" == "router" ]]; then
+        render_router
         exit 0
     fi
     render_instance_conf "$RENDER_ONE" "${BASE_LLAMA_API_KEY:-<preserved-from-target>}"
@@ -201,6 +234,14 @@ done
     exit 1
 }
 
+RETIRED_INSTANCES=()
+for conf in $(remote_exec "ls $INSTANCES_DIR/*.conf 2>/dev/null" || true); do
+    name=$(basename "$conf" .conf)
+    [[ " ${INSTANCE_NAMES[*]} " == *" $name "* ]] && continue
+    RETIRED_INSTANCES+=("$name")
+    echo -e "  ${YELLOW}RETIRE${NC}     $name (no longer in config)"
+done
+
 # nginx routes by this map; changing a port without it breaks routing.
 echo -e "${CYAN}[4/7]${NC} Checking nginx router map..."
 ROUTER_JSON=$(remote_exec "cat $ROUTER_MAP 2>/dev/null" || echo "")
@@ -218,6 +259,16 @@ for name in "${INSTANCE_NAMES[@]}"; do
         echo "  Fix $ROUTER_MAP (and reload nginx) or the port in llama.yaml." >&2
         exit 1
     fi
+done
+for name in "${RETIRED_INSTANCES[@]}"; do
+    mapped=$(jq -r --arg n "$name" '.[$n] // ""' <<<"$ROUTER_JSON")
+    if [[ -n "$mapped" && "$mapped" == "$(jq -r '._default // ""' <<<"$ROUTER_JSON")" ]] \
+        && ! jq -e --arg n "$name" --arg m "$mapped" 'to_entries | any(.key != $n and .key != "_default" and .value == $m)' <<<"$ROUTER_JSON" >/dev/null; then
+        echo -e "  ${RED}$name is the router's _default; point _default elsewhere before retiring it${NC}" >&2
+        exit 1
+    fi
+    NEW_ROUTER_JSON=$(router_map_without "$NEW_ROUTER_JSON" "$name")
+    echo -e "  ${YELLOW}RETIRE${NC}     route $name"
 done
 echo "  router map agrees with configured ports"
 
@@ -277,7 +328,26 @@ if ((UNIT_CHANGED)); then
     RESTART=("${INSTANCE_NAMES[@]}")
 fi
 
-if ((${#RESTART[@]} == 0)); then
+NEW_ROUTER_CONF=$(render_router)
+NEW_ROUTER_JS=$(<"$ROUTER_JS_SOURCE")
+CUR_ROUTER_CONF=$(remote_exec "cat $ROUTER_CONF 2>/dev/null" || echo "")
+CUR_ROUTER_JS=$(remote_exec "cat $ROUTER_JS 2>/dev/null" || echo "")
+ROUTER_FILES_CHANGED=0
+for pair in "$ROUTER_CONF:CONF" "$ROUTER_JS:JS"; do
+    path="${pair%:*}"; cur_var="CUR_ROUTER_${pair##*:}"; new_var="NEW_ROUTER_${pair##*:}"
+    if [[ "${!cur_var}" == "${!new_var}" ]]; then
+        echo -e "  ${GREEN}unchanged${NC}  $path"
+    else
+        ROUTER_FILES_CHANGED=1
+        echo -e "  ${YELLOW}CHANGED${NC}    $path"
+        diff -u <(printf '%s\n' "${!cur_var}") <(printf '%s\n' "${!new_var}") | sed 's/^/      /' || true
+    fi
+done
+ROUTER_CHANGED=0
+[[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]] && ROUTER_CHANGED=1
+((ROUTER_FILES_CHANGED)) && ROUTER_CHANGED=1
+
+if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED)); then
     echo -e "\n${GREEN}Nothing to do — target already matches config.${NC}"
     exit 0
 fi
@@ -286,8 +356,11 @@ if [[ "$MODE" == "dry-run" ]]; then
     echo ""
     ((UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $UNIT_PATH + daemon-reload${NC}"
     ((${#CHANGED[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would rewrite confs: ${CHANGED[*]}${NC}"
-    [[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]] && echo -e "${YELLOW}DRY RUN — would add routes for: ${NEW_INSTANCES[*]} and reload nginx${NC}"
-    echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]}${NC}"
+    ((${#NEW_INSTANCES[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would add routes for: ${NEW_INSTANCES[*]}${NC}"
+    ((${#RETIRED_INSTANCES[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would stop, disable and unroute: ${RETIRED_INSTANCES[*]}${NC}"
+    ((ROUTER_FILES_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $ROUTER_CONF and $ROUTER_JS${NC}"
+    ((ROUTER_CHANGED)) && echo -e "${YELLOW}DRY RUN — would nginx -t and reload nginx${NC}"
+    echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]:-nothing}${NC}"
     echo -e "${YELLOW}Run 'make deploy' to apply${NC}"
     exit 0
 fi
@@ -383,14 +456,27 @@ for name in "${CHANGED[@]}"; do
     echo -e "  ${GREEN}written + verified${NC}  $name"
 done
 
-if [[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]]; then
-    echo -e "${CYAN}[6/7]${NC} Routing ${NEW_INSTANCES[*]}"
-    remote_exec_sudo "cp $ROUTER_MAP $ROUTER_MAP.backup.$TIMESTAMP"
-    rb "cp $ROUTER_MAP.backup.$TIMESTAMP $ROUTER_MAP && systemctl reload nginx"
+if ((ROUTER_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Updating the nginx router"
+    for f in "$ROUTER_MAP" "$ROUTER_CONF" "$ROUTER_JS"; do
+        remote_exec_sudo "cp $f $f.backup.$TIMESTAMP"
+        rb "cp $f.backup.$TIMESTAMP $f && systemctl reload nginx"
+    done
     jq . <<<"$NEW_ROUTER_JSON" | remote_write_sudo "$ROUTER_MAP" 644
+    printf '%s\n' "$NEW_ROUTER_CONF" | remote_write_sudo "$ROUTER_CONF" 644
+    printf '%s\n' "$NEW_ROUTER_JS" | remote_write_sudo "$ROUTER_JS" 644
     remote_exec_sudo "nginx -t -q && systemctl reload nginx"
-    echo -e "  ${GREEN}router map written + nginx reloaded${NC}"
+    echo -e "  ${GREEN}router written + nginx -t + reloaded${NC}"
 fi
+
+for name in "${RETIRED_INSTANCES[@]}"; do
+    echo -e "${CYAN}[6/7]${NC} Retiring $name"
+    remote_exec_sudo "systemctl disable --now llama-server@$name"
+    rb "systemctl enable --now llama-server@$name"
+    remote_exec_sudo "mv $INSTANCES_DIR/$name.conf $INSTANCES_DIR/$name.conf.retired.$TIMESTAMP"
+    rb "mv $INSTANCES_DIR/$name.conf.retired.$TIMESTAMP $INSTANCES_DIR/$name.conf"
+    echo -e "  ${GREEN}stopped, disabled, conf kept as $name.conf.retired.$TIMESTAMP${NC}"
+done
 
 echo -e "${CYAN}[7/7]${NC} Restarting ${#RESTART[@]} instance(s) (model load takes a minute)..."
 for name in "${RESTART[@]}"; do
