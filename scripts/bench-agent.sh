@@ -75,20 +75,14 @@ OUT_DIR="${BENCH_OUT_DIR:-bench}"
 LABEL="${BENCH_LABEL:-agent-current}"
 BASELINE="${BENCH_BASELINE:-$OUT_DIR/agent-baseline.json}"
 
-# Merged into every request, the way a consumer asks for thinking off or a reasoning effort.
 EXTRA="${BENCH_EXTRA:-"{}"}"
 jq -e 'type == "object"' <<<"$EXTRA" >/dev/null 2>&1 || {
     echo -e "${RED}BENCH_EXTRA must be a JSON object${NC}" >&2; exit 2; }
-# client: Qwen's non-thinking sampler on every request. server: none, so each instance's own
-# applies, which is the only fair way to compare models.
 SAMPLER="${BENCH_SAMPLER:-client}"
 TEMP="${BENCH_TEMP:-0.7}"
 TOP_P="${BENCH_TOP_P:-0.8}"
 TOP_K="${BENCH_TOP_K:-20}"
-# auto: the model decides. turn: required on tool turns, none on answer turns.
 TOOL_CHOICE="${BENCH_TOOL_CHOICE:-auto}"
-# 1: send each turn's live reasoning_content back with the recorded history, as a client on
-# llama.cpp's preserved-thinking path does.
 REPLAY_REASONING="${BENCH_REPLAY_REASONING:-0}"
 
 [[ -f "$FIXTURE" ]] || { echo -e "${RED}no fixture at $FIXTURE${NC}" >&2; exit 1; }
