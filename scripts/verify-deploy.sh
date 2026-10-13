@@ -118,6 +118,23 @@ assert_replays_reasoning() {
 echo -e "${BLUE}Verifying $REMOTE_USER@$REMOTE_HOST${NC}\n"
 test_ssh || { echo -e "${RED}Cannot reach target${NC}" >&2; exit 1; }
 
+if [[ "$RUNTIME_GPU" == "amd" ]]; then
+    echo -e "${YELLOW}gpu memory${NC}"
+    cmdline=$(remote_exec "cat /proc/cmdline")
+    gib() { remote_exec "cat /sys/class/drm/card*/device/$1 2>/dev/null | sort -n | tail -1" | awk '{printf "%d", $1/1073741824}'; }
+    vram=$(gib mem_info_vram_total)
+    gtt=$(gib mem_info_gtt_total)
+    ((vram <= 2)) && ok "BIOS carve-out is ${vram} GiB" \
+        || bad "BIOS carve-out is ${vram} GiB; set the UMA frame buffer to its minimum"
+    ((gtt >= 110)) && ok "GTT is ${gtt} GiB" || bad "GTT is ${gtt} GiB, want at least 110"
+    [[ " $cmdline " == *" ttm.pages_limit=31457280 "* ]] && ok "ttm.pages_limit caps the GPU at 120 GiB" \
+        || bad "kernel cmdline lacks ttm.pages_limit=31457280"
+    for arg in amd_iommu=off amdgpu.gttsize; do
+        [[ "$cmdline" == *"$arg"* ]] && bad "kernel cmdline still has $arg" || ok "kernel cmdline has no $arg"
+    done
+    echo ""
+fi
+
 for name in "${INSTANCE_NAMES[@]}"; do
     load_instance "$name" || { echo -e "${RED}bad config for $name${NC}"; FAILED=$((FAILED + 1)); continue; }
     echo -e "${YELLOW}$name${NC} (port $INST_PORT)"
