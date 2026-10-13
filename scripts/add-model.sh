@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Download a model from HuggingFace to the remote LLM server, pinned to one commit and checked
-# against the sha256 HuggingFace publishes for it.
 # Usage: ./scripts/add-model.sh <hf-repo> <model-filename> [revision]
-# Example: ./scripts/add-model.sh unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-Q8_0.gguf
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
