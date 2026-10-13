@@ -43,6 +43,9 @@ expect_verdict "a call without a required arg fails the schema" schema "$lookup"
 expect_verdict "a turn needing two tools passes when both are called" ok "$resolve" \
     < <(call 0 get_customers '{"q":"a"}'; call 1 get_users '{"q":"a"}'; finish tool_calls)
 
+expect_verdict "calling one of them first is a step an agent loop finishes" ok "$resolve" \
+    < <(call 0 get_customers '{"q":"a"}'; finish tool_calls)
+
 expect_verdict "a tool call on a turn that needed an answer is unexpected" unexpected_call "$answer" \
     < <(call 0 get_customers '{"query":"acme"}'; finish tool_calls)
 

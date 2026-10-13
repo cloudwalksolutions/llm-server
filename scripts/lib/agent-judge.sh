@@ -48,7 +48,7 @@ judge_turn() {
     fi
     want_tools=$(jq -c '.tools // [] | sort' <<<"$turn")
     got_tools=$(jq -c 'map(.name) | sort' <<<"$R_CALLS")
-    if [[ "$want_tools" != "[]" && "$want_tools" != "$got_tools" ]]; then
+    if [[ "$want_tools" != "[]" ]] && ! jq -e --argjson w "$want_tools" 'all(IN($w[]))' <<<"$got_tools" >/dev/null; then
         VERDICT=wrong_tool; NOTE="want $want_tools, got $got_tools"
         return
     fi
