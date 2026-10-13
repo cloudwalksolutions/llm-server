@@ -209,6 +209,7 @@ load_instance() {
     INST_CACHE_TYPE_V=$(_ivalue "$name" cache_type_v)
     INST_FLASH_ATTN=$(_ivalue "$name" flash_attn)
     INST_DRAFT_MAX=$(_ivalue "$name" draft_max)
+    INST_SPEC_TYPE=$(_ivalue "$name" spec_type)
     INST_REASONING=$(_ivalue "$name" reasoning)
     INST_REASONING_BUDGET=$(_ivalue "$name" reasoning_budget)
     INST_REASONING_BUDGET_MESSAGE=$(_ivalue "$name" reasoning_budget_message)
@@ -232,6 +233,7 @@ load_instance() {
     _require_uint "$p.reasoning_budget" "$INST_REASONING_BUDGET" || return 1
     _require_enum "$p.kv_unified" "$INST_KV_UNIFIED" true false || return 1
     _require_enum "$p.flash_attn" "$INST_FLASH_ATTN" true false || return 1
+    _require_enum "$p.spec_type" "$INST_SPEC_TYPE" draft-simple draft-mtp || return 1
     _require_enum "$p.reasoning" "$INST_REASONING" on off auto || return 1
     # shellcheck disable=SC2086
     _require_enum "$p.cache_type_k" "$INST_CACHE_TYPE_K" $_KV_CACHE_TYPES || return 1

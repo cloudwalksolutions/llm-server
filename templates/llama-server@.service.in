@@ -43,7 +43,7 @@ ExecStart=/bin/sh -c '\
     [ "$FLASH_ATTN" = "true" ] && FA_ARG="-fa on"; \
     DRAFT_ARGS=""; \
     if [ -n "$DRAFT_MODEL" ] && [ "$DRAFT_MODEL" != "null" ]; then \
-        DRAFT_ARGS="-md /models/$DRAFT_MODEL --draft-max $DRAFT_MAX -ngld 999"; \
+        DRAFT_ARGS="--spec-type $SPEC_TYPE -md /models/$DRAFT_MODEL --spec-draft-n-max $DRAFT_MAX -ngld 999"; \
     fi; \
     exec @ENGINE_BIN@ run \
         --name llama-server-%i \

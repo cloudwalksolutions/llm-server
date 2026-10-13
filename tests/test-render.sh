@@ -515,6 +515,18 @@ test_unit_loads_models_without_mmap_by_its_current_name() {
     pass "mmap disabled by -lm none, reasoning capped"
 }
 
+test_unit_drafts_with_the_current_speculative_flags() {
+    echo "TEST: a draft model runs with --spec-type and --spec-draft-n-max, not the removed --draft-max"
+    local unit
+    unit=$(render_unit amd)
+    grep -q -- '--draft-max' <<<"$unit" && { fail "unit still passes the removed --draft-max"; return; }
+    grep -q -- '--spec-type $SPEC_TYPE -md /models/$DRAFT_MODEL --spec-draft-n-max $DRAFT_MAX' <<<"$unit" \
+        || { fail "unit does not pass the speculative type and draft count"; return; }
+    [[ "$(conf_val "$(render amd overridden)" SPEC_TYPE)" == "draft-mtp" ]] \
+        || { fail "spec_type override ignored"; return; }
+    pass "speculative decoding uses the current flags"
+}
+
 test_unit_gives_flash_attention_a_value() {
     echo "TEST: flash_attn: true renders -fa on"
     local unit
@@ -636,6 +648,7 @@ else
              test_sudo_gets_the_password_over_key_auth \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
+             test_unit_drafts_with_the_current_speculative_flags \
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
              test_a_new_file_takes_its_directorys_owner \
              test_router_has_a_backend_for_every_instance \
