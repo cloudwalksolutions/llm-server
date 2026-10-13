@@ -25,6 +25,7 @@ defaults:
   spec_type: draft-simple
   reasoning: auto
   reasoning_budget: 512
+  cache_ram: 1024
   reasoning_budget_message: Answer now.
   container_image: example.invalid/llama:test
 

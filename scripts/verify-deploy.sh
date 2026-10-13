@@ -168,6 +168,7 @@ for name in "${INSTANCE_NAMES[@]}"; do
         assert_eq "live -c"  "$(grep -oP '(?:^|\s)-c\s+\K[0-9]+' <<<"$cmdline" | head -1)"  "$INST_TOTAL_CONTEXT"
         assert_eq "live -np" "$(grep -oP '(?:^|\s)-np\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_PARALLEL_SLOTS"
         assert_eq "live --reasoning-budget" "$(grep -oP '(?:^|\s)--reasoning-budget\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_REASONING_BUDGET"
+        assert_eq "live --cache-ram MiB" "$(grep -oP '(?:^|\s)--cache-ram\s+\K[0-9]+' <<<"$cmdline" | head -1)" "${INST_CACHE_RAM:-unset}"
         if grep -qF -- "--reasoning-budget-message $INST_REASONING_BUDGET_MESSAGE" <<<"$cmdline"; then
             ok "live --reasoning-budget-message"
         else

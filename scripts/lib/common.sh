@@ -213,6 +213,7 @@ load_instance() {
     INST_SPEC_TYPE=$(_ivalue "$name" spec_type)
     INST_REASONING=$(_ivalue "$name" reasoning)
     INST_REASONING_BUDGET=$(_ivalue "$name" reasoning_budget)
+    INST_CACHE_RAM=$(_ivalue "$name" cache_ram)
     INST_REASONING_BUDGET_MESSAGE=$(_ivalue "$name" reasoning_budget_message)
     INST_CONTAINER_IMAGE=$(_ivalue "$name" container_image)
     INST_SAMPLING=$(yq -o=json -I=0 ".instances.\"$name\".sampling // {}" "$CONFIG_FILE")
@@ -232,6 +233,7 @@ load_instance() {
     _require_uint "$p.cache_reuse" "$INST_CACHE_REUSE" || return 1
     _require_uint "$p.draft_max" "$INST_DRAFT_MAX" || return 1
     _require_uint "$p.reasoning_budget" "$INST_REASONING_BUDGET" || return 1
+    _require_uint "$p.cache_ram" "$INST_CACHE_RAM" || return 1
     _require_enum "$p.kv_unified" "$INST_KV_UNIFIED" true false || return 1
     _require_enum "$p.flash_attn" "$INST_FLASH_ATTN" true false || return 1
     _require_enum "$p.spec_type" "$INST_SPEC_TYPE" draft-simple draft-mtp || return 1
