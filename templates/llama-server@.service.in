@@ -51,7 +51,7 @@ ExecStart=/bin/sh -c '\
 @GPU_ARGS@
         -v @MODELS_DIR@:/models:ro \
         -p 127.0.0.1:${LLAMA_PORT}:${LLAMA_PORT} \
-        -e LLAMA_API_KEY=${LLAMA_API_KEY} \
+        -e LLAMA_API_KEY \
         ${CONTAINER_IMAGE} \
         @SERVER_CMD@ \
             --alias %i \
