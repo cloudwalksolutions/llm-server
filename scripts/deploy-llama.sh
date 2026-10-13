@@ -60,6 +60,7 @@ CACHE_TYPE_V=$INST_CACHE_TYPE_V
 FLASH_ATTN=$INST_FLASH_ATTN
 DRAFT_MODEL=$INST_DRAFT_MODEL
 DRAFT_MAX=$INST_DRAFT_MAX
+SPEC_TYPE=$INST_SPEC_TYPE
 REASONING=$INST_REASONING
 REASONING_BUDGET=$INST_REASONING_BUDGET
 REASONING_BUDGET_MESSAGE="$INST_REASONING_BUDGET_MESSAGE"
@@ -261,10 +262,18 @@ for name in "${INSTANCE_NAMES[@]}"; do
         exit 1
     fi
 done
+if [[ -n "$ROUTER_DEFAULT" ]]; then
+    [[ " ${INSTANCE_NAMES[*]} " == *" $ROUTER_DEFAULT "* ]] \
+        || { echo -e "  ${RED}runtime.router_default names $ROUTER_DEFAULT, which is not an instance${NC}" >&2; exit 1; }
+    load_instance "$ROUTER_DEFAULT"
+    NEW_ROUTER_JSON=$(router_map_default "$NEW_ROUTER_JSON" "$INST_PORT")
+    [[ "$(jq -r '._default // ""' <<<"$ROUTER_JSON")" == "127.0.0.1:$INST_PORT" ]] \
+        || echo -e "  ${YELLOW}CHANGED${NC}    route _default -> $ROUTER_DEFAULT (127.0.0.1:$INST_PORT)"
+fi
 for name in "${RETIRED_INSTANCES[@]}"; do
     mapped=$(jq -r --arg n "$name" '.[$n] // ""' <<<"$ROUTER_JSON")
-    if [[ -n "$mapped" && "$mapped" == "$(jq -r '._default // ""' <<<"$ROUTER_JSON")" ]] \
-        && ! jq -e --arg n "$name" --arg m "$mapped" 'to_entries | any(.key != $n and .key != "_default" and .value == $m)' <<<"$ROUTER_JSON" >/dev/null; then
+    if [[ -n "$mapped" && "$mapped" == "$(jq -r '._default // ""' <<<"$NEW_ROUTER_JSON")" ]] \
+        && ! jq -e --arg n "$name" --arg m "$mapped" 'to_entries | any(.key != $n and .key != "_default" and .value == $m)' <<<"$NEW_ROUTER_JSON" >/dev/null; then
         echo -e "  ${RED}$name is the router's _default; point _default elsewhere before retiring it${NC}" >&2
         exit 1
     fi

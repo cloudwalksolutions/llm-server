@@ -13,6 +13,7 @@ runtime:
   gpu: amd                    # amd | nvidia   — must match the target
   instances_dir: /opt/llm/instances
   router_map: /etc/llama-router/models.json
+  router_default: my-model    # the instance a request without a known model reaches
 
 # Applied to every instance unless the instance overrides it.
 defaults:
@@ -96,11 +97,12 @@ defaults:
   # Check the resolved value with `make status` (flash-at), never from this line.
   flash_attn: false
 
-  # Speculative decoding. Needs a small draft model of the same family.
-  # Empty string disables it. A quantized KV cache can collapse draft
-  # acceptance, so prefer f16 when using this.
+  # Speculative decoding. Empty draft_model disables it. spec_type draft-simple takes a
+  # small model of the same family; draft-mtp takes a model's own MTP head file. A
+  # quantized KV cache can collapse draft acceptance, so prefer f16 when using this.
   draft_model: ""
   draft_max: 16
+  spec_type: draft-simple
 
   reasoning: auto
   reasoning_budget: 512
