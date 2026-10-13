@@ -56,7 +56,7 @@ instances:
     port: 8090
     model_file: gpt-oss-120b-MXFP4.gguf
     context_per_request: 65536
-    parallel_slots: 1
+    parallel_slots: 2
     reasoning_budget: 16384
     sampling:
       temperature: 1.0
