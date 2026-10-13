@@ -127,8 +127,9 @@ if [[ "$RUNTIME_GPU" == "amd" ]]; then
     ((vram <= 2)) && ok "BIOS carve-out is ${vram} GiB" \
         || bad "BIOS carve-out is ${vram} GiB; set the UMA frame buffer to its minimum"
     ((gtt >= 110)) && ok "GTT is ${gtt} GiB" || bad "GTT is ${gtt} GiB, want at least 110"
-    [[ " $cmdline " == *" ttm.pages_limit=31457280 "* ]] && ok "ttm.pages_limit caps the GPU at 120 GiB" \
-        || bad "kernel cmdline lacks ttm.pages_limit=31457280"
+    ram=$(remote_exec "awk '/^MemTotal/ {printf \"%d\", \$2/1048576}' /proc/meminfo")
+    ((ram - gtt >= 12)) && ok "the system keeps $((ram - gtt)) GiB the GPU cannot take" \
+        || bad "the GPU may take ${gtt} of ${ram} GiB, leaving the system $((ram - gtt)); want at least 12"
     for arg in amd_iommu=off amdgpu.gttsize; do
         [[ "$cmdline" == *"$arg"* ]] && bad "kernel cmdline still has $arg" || ok "kernel cmdline has no $arg"
     done

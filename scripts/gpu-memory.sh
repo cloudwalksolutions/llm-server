@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Let the GPU of a unified-memory AMD host take its memory from GTT, up to 120 GiB, instead of a
+# Let the GPU of a unified-memory AMD host take its memory from GTT, up to 112 GiB, instead of a
 # fixed BIOS carve-out. Sets the kernel arguments; they take effect at the next boot, together
 # with the BIOS UMA frame buffer set to its minimum. `make verify` checks both.
 #
@@ -15,7 +15,8 @@ DRY_RUN=0
 load_config || exit 1
 test_ssh || { echo -e "${RED}Cannot reach target${NC}" >&2; exit 1; }
 
-WANT="ttm.pages_limit=31457280"
+# 112 GiB in 4 KiB pages: the host sees 124 GiB, and the system keeps 12.
+WANT="ttm.pages_limit=29360128"
 args=$(remote_exec_sudo "grubby --info=DEFAULT" | sed -n 's/^args="\(.*\)"$/\1/p')
 echo "default kernel args: $args"
 
