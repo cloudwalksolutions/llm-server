@@ -101,6 +101,7 @@ load_config() {
     UNIT_PATH=$(yq '.runtime.unit_path // "/etc/systemd/system/llama-server@.service"' "$CONFIG_FILE")
     ROUTER_CONF=$(yq '.runtime.router_conf // "/etc/nginx/conf.d/llama-router.conf"' "$CONFIG_FILE")
     ROUTER_JS=$(yq '.runtime.router_js // "/etc/nginx/njs/llama-router.js"' "$CONFIG_FILE")
+    ROUTER_DEFAULT=$(yq '.runtime.router_default // ""' "$CONFIG_FILE")
 
     _require_enum "runtime.engine" "$RUNTIME_ENGINE" podman docker || return 1
     _require_enum "runtime.gpu" "$RUNTIME_GPU" amd nvidia || return 1
@@ -450,4 +451,8 @@ router_map_with() {
 
 router_map_without() {
     jq -c --arg n "$2" 'del(.[$n])' <<<"$1"
+}
+
+router_map_default() {
+    jq -c --arg b "127.0.0.1:$2" '. + {_default: $b}' <<<"$1"
 }

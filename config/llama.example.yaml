@@ -13,6 +13,7 @@ runtime:
   gpu: amd                    # amd | nvidia   — must match the target
   instances_dir: /opt/llm/instances
   router_map: /etc/llama-router/models.json
+  router_default: my-model    # the instance a request without a known model reaches
 
 # Applied to every instance unless the instance overrides it.
 defaults:

@@ -7,6 +7,7 @@ runtime:
   gpu: amd
   instances_dir: /opt/llm/instances
   router_map: /etc/llama-router/models.json
+  router_default: qwen3.6-35b-a3b
 
 defaults:
   kv_unified: false
@@ -28,13 +29,6 @@ defaults:
   container_image: us-east1-docker.pkg.dev/on-prem-cw-admin-project/llm-images/amd-strix-halo-toolboxes:llamacpp-b11559
 
 instances:
-  qwen3-14b-1m:
-    port: 8081
-    model_file: Qwen3-14B-Q4_K_M.gguf
-    context_per_request: 40960
-    parallel_slots: 1
-    threads_http: 4
-
   qwen3-8b:
     port: 8083
     model_file: Qwen3-8B-Q4_K_M.gguf

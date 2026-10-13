@@ -401,6 +401,15 @@ test_a_new_file_takes_its_directorys_owner() {
     pass "new file owned like its directory"
 }
 
+test_router_map_points_default_at_the_configured_instance() {
+    echo "TEST: _default follows the instance runtime.router_default names"
+    local after
+    after=$(router_map_default '{"a":"127.0.0.1:8081","b":"127.0.0.1:8082","_default":"127.0.0.1:8081"}' 8082)
+    [[ "$(jq -r ._default <<<"$after")" == "127.0.0.1:8082" ]] || { fail "_default not moved: $after"; return; }
+    [[ "$(jq -r .a <<<"$after")" == "127.0.0.1:8081" ]] || { fail "other route changed: $after"; return; }
+    pass "_default moved, routes untouched"
+}
+
 test_router_map_drops_a_retired_instance_and_keeps_the_rest() {
     echo "TEST: retiring an instance removes only its route"
     local after
@@ -652,6 +661,7 @@ else
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
              test_a_new_file_takes_its_directorys_owner \
              test_router_has_a_backend_for_every_instance \
+             test_router_map_points_default_at_the_configured_instance \
              test_router_map_drops_a_retired_instance_and_keeps_the_rest; do
         "$t"
         echo ""
