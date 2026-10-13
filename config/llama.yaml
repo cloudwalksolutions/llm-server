@@ -51,6 +51,18 @@ instances:
       min_p: 0
       presence_penalty: 1.5
 
+  gpt-oss-120b:
+    port: 8090
+    model_file: gpt-oss-120b-MXFP4.gguf
+    context_per_request: 65536
+    parallel_slots: 1
+    reasoning_budget: 16384
+    sampling:
+      temperature: 1.0
+      top_p: 1.0
+      top_k: 0
+      min_p: 0
+
 resources:
   limit_nofile: 65535
   limit_memlock: infinity
