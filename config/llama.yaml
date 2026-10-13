@@ -57,18 +57,6 @@ instances:
       min_p: 0
       presence_penalty: 1.5
 
-  qwen3.8-27b:
-    port: 8090
-    model_file: Qwen3.8-27B-Q8_0.gguf
-    context_per_request: 131072
-    parallel_slots: 1
-    reasoning_budget: 2048
-    sampling:
-      temperature: 1.0
-      top_p: 0.95
-      top_k: 20
-      min_p: 0
-
 resources:
   limit_nofile: 65535
   limit_memlock: infinity
