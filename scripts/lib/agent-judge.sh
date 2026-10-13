@@ -1,10 +1,3 @@
-# Judge one streamed chat turn against what its fixture turn expects.
-#
-# judge_turn <turn-json> <sse-file>
-# Sets R_CONTENT, R_REASONING, R_CALLS (a JSON array of {name, args}), R_FINISH,
-# then VERDICT: ok | missing | invalid_json | wrong_tool | schema |
-#               unexpected_call | no_content | reasoning_ate_budget
-# and NOTE, a one-line explanation.
 judge_turn() {
     local turn="$1" sse="$2" frames
     frames=$(grep '^data: ' "$sse" | sed 's/^data: //' | grep -v '^\[DONE\]$')

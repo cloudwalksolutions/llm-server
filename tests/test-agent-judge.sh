@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Offline: judge_turn against hand-built SSE streams.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source scripts/lib/agent-judge.sh
