@@ -68,13 +68,13 @@ phase1_system_setup() {
     log_info "Installing required packages..."
     dnf install -y podman python3 git curl wget jq byobu
 
-    log_info "Configuring kernel parameters for 128GB unified GPU memory..."
+    log_info "Letting the GPU take up to 112 GiB from GTT (BIOS UMA frame buffer at its minimum)..."
 
-    if grep -q "amdgpu.gttsize=131072" /proc/cmdline 2>/dev/null; then
+    if grep -q " ttm.pages_limit=29360128" /proc/cmdline 2>/dev/null; then
         log_info "Kernel parameters already configured"
     else
-        grubby --update-kernel=ALL --args='amd_iommu=off amdgpu.gttsize=131072 ttm.pages_limit=33554432'
-        log_warn "Kernel parameters updated - REBOOT REQUIRED"
+        grubby --update-kernel=ALL --remove-args='amd_iommu amdgpu.gttsize ttm.pages_limit' --args='ttm.pages_limit=29360128'
+        log_warn "Kernel parameters updated - set the BIOS UMA frame buffer to its minimum, then REBOOT"
         touch /tmp/reboot_required
     fi
 
