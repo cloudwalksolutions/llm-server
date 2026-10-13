@@ -1,0 +1,36 @@
+{
+  "system": "You help a service business set up its account. Use the tools for anything about its customers, users or catalog; never answer those from memory. When a request names a person at a company, look up both the company and the person before changing anything. Answer briefly.",
+  "tools": [
+    {"type": "function", "function": {"name": "get_catalog", "description": "Search the business's catalog of services and products.", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Words to search for"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "create_item", "description": "Add a service or product to the catalog.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "price": {"type": "number", "description": "Price in dollars"}}, "required": ["name", "price"]}}},
+    {"type": "function", "function": {"name": "get_customers", "description": "Search customer companies by name.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "create_customer", "description": "Create a customer company.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}}, "required": ["name"]}}},
+    {"type": "function", "function": {"name": "update_customer", "description": "Change fields on a customer company.", "parameters": {"type": "object", "properties": {"id": {"type": "integer"}, "phone": {"type": "string"}, "primary_contact_id": {"type": "integer"}}, "required": ["id"]}}},
+    {"type": "function", "function": {"name": "get_users", "description": "Search people by name, at customers or on the team.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+    {"type": "function", "function": {"name": "create_user", "description": "Create a person.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "role": {"type": "string", "enum": ["admin", "technician", "contact"]}}, "required": ["name", "role"]}}},
+    {"type": "function", "function": {"name": "update_user", "description": "Change fields on a person.", "parameters": {"type": "object", "properties": {"id": {"type": "integer"}, "email": {"type": "string"}, "role": {"type": "string", "enum": ["admin", "technician", "contact"]}}, "required": ["id"]}}},
+    {"type": "function", "function": {"name": "finish_setup", "description": "Mark account setup as complete.", "parameters": {"type": "object", "properties": {}}}}
+  ],
+  "turns": [
+    {"id": "t1-catalog", "user": "What do you offer for hull cleaning?", "expect": "tool_call",
+     "tools": ["get_catalog"], "required_args": ["query"],
+     "replay_assistant": {"role": "assistant", "content": "", "tool_calls": [{"id": "call_t1", "type": "function", "function": {"name": "get_catalog", "arguments": "{\"query\":\"hull cleaning\"}"}}]},
+     "replay_tool": {"role": "tool", "tool_call_id": "call_t1", "content": "[{\"id\":7,\"name\":\"Hull cleaning, under 30ft\",\"price\":180},{\"id\":8,\"name\":\"Hull cleaning, 30ft and over\",\"price\":260}]"}},
+    {"id": "t2-answer", "user": "Thanks. List those in one line.", "expect": "content",
+     "replay_assistant": {"role": "assistant", "content": "Hull cleaning under 30ft is $180, and 30ft and over is $260."}},
+    {"id": "t3-resolve", "user": "Make Dana Reyes the primary contact for Harbor Marine.", "expect": "tool_call",
+     "tools": ["get_customers", "get_users"],
+     "replay_assistant": {"role": "assistant", "content": "", "tool_calls": [
+       {"id": "call_t3a", "type": "function", "function": {"name": "get_customers", "arguments": "{\"query\":\"Harbor Marine\"}"}},
+       {"id": "call_t3b", "type": "function", "function": {"name": "get_users", "arguments": "{\"query\":\"Dana Reyes\"}"}}]},
+     "replay_tool": [
+       {"role": "tool", "tool_call_id": "call_t3a", "content": "[{\"id\":42,\"name\":\"Harbor Marine\"}]"},
+       {"role": "tool", "tool_call_id": "call_t3b", "content": "[{\"id\":311,\"name\":\"Dana Reyes\",\"role\":\"contact\"}]"}]},
+    {"id": "t4-update", "user": "Yes, go ahead, and set their phone to 555-0142 too.", "expect": "tool_call",
+     "tools": ["update_customer"], "required_args": ["id"],
+     "replay_assistant": {"role": "assistant", "content": "", "tool_calls": [{"id": "call_t4", "type": "function", "function": {"name": "update_customer", "arguments": "{\"id\":42,\"primary_contact_id\":311,\"phone\":\"555-0142\"}"}}]},
+     "replay_tool": {"role": "tool", "tool_call_id": "call_t4", "content": "{\"id\":42,\"name\":\"Harbor Marine\",\"phone\":\"555-0142\",\"primary_contact_id\":311}"}},
+    {"id": "t5-answer", "user": "Is that saved?", "expect": "content",
+     "replay_assistant": {"role": "assistant", "content": "Yes. Harbor Marine now has Dana Reyes as its primary contact and 555-0142 as its phone."}}
+  ]
+}

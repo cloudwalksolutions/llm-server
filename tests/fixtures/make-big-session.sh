@@ -45,15 +45,15 @@ def call(id; name; args): {role: "assistant", content: "",
      replay_tool: {role: "tool", tool_call_id: "call_t1",
                    content: ({total_count: 2, items: [{number: 12, title: "Rotate session keys", state: "open"},
                                                        {number: 15, title: "Rate-limit the login endpoint", state: "open"}]} | tojson)}},
-    {id: "t2-summary", user: "Summarise those in two sentences.", expect: "content",
-     replay_assistant: {role: "assistant", content: "Two open pull requests touch authentication: #12 rotates session keys, and #15 rate-limits the login endpoint."}},
+    {id: "t2-summary", user: "Going by those titles alone, which one is about logins? One sentence.", expect: "content",
+     replay_assistant: {role: "assistant", content: "#15, which rate-limits the login endpoint."}},
     {id: "t3-search-code", user: "Find where the service sets its default model in globex/api.",
      expect: "tool_call",
      replay_assistant: call("call_t3"; tool_name("globex"; "search_code"); {query: "DEFAULT_MODEL repo:globex/api"}),
      replay_tool: {role: "tool", tool_call_id: "call_t3",
                    content: ({total_count: 1, items: [{path: "internal/config/model.go", repository: "globex/api"}]} | tojson)}},
-    {id: "t4-final", user: "Which file should I change to use a different model, and how?", expect: "content",
-     replay_assistant: {role: "assistant", content: "Change the DEFAULT_MODEL constant in internal/config/model.go."}}
+    {id: "t4-final", user: "What is the path of that file? Just the path.", expect: "content",
+     replay_assistant: {role: "assistant", content: "internal/config/model.go"}}
   ]
 }' > "$OUT"
 

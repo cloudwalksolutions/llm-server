@@ -122,6 +122,7 @@ lint:
 .PHONY: test-unit
 test-unit:
 	@./tests/test-render.sh
+	@./tests/test-agent-judge.sh
 
 .PHONY: test-unit-accept
 test-unit-accept:

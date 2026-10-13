@@ -37,7 +37,8 @@
 #   ./scripts/bench-agent.sh                    run against BENCH_INSTANCE
 #   BENCH_INSTANCE=qwen3-14b-1m ./scripts/bench-agent.sh
 #   BENCH_ITERATIONS=5 ./scripts/bench-agent.sh
-#   BENCH_NO_THINK=0 ./scripts/bench-agent.sh   the thinking-on arm (see NO_THINK below)
+#   BENCH_EXTRA='{"chat_template_kwargs":{"enable_thinking":false}}' ./scripts/bench-agent.sh
+#   BENCH_SAMPLER=server BENCH_TOOL_CHOICE=turn BENCH_REPLAY_REASONING=1 ./scripts/bench-agent.sh
 #   ./scripts/bench-agent.sh --accept           promote this run to the baseline
 set -uo pipefail
 
@@ -45,6 +46,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/agent-judge.sh
+source "$SCRIPT_DIR/lib/agent-judge.sh"
 
 ACCEPT=0
 case "${1:-}" in
@@ -72,25 +75,15 @@ OUT_DIR="${BENCH_OUT_DIR:-bench}"
 LABEL="${BENCH_LABEL:-agent-current}"
 BASELINE="${BENCH_BASELINE:-$OUT_DIR/agent-baseline.json}"
 
-# Match what the consuming app sends. `with_thinking_policy` appends Qwen's
-# /no_think soft switch to every prompt, and MEASURED on this target that takes
-# reasoning_content from 260 chars to 0 while the tool call still lands.
-#
-# Defaulting this ON is both more representative and much faster: with thinking
-# active every turn emits hundreds of reasoning frames, and on a 1-slot instance a
-# 24-turn run takes hours rather than minutes.
-#
-# BENCH_NO_THINK=0 runs the thinking-on path. That is the A/B for llama.cpp #20345
-# (whether tool-schema grammar enforcement is inactive while thinking is enabled):
-# run both and compare toolArgsInvalidJson / toolArgsSchemaMismatch.
-NO_THINK="${BENCH_NO_THINK:-1}"
-THINK_SUFFIX=""
-((NO_THINK)) && THINK_SUFFIX=" /no_think"
-
-# Qwen's documented non-thinking sampler. Not temperature 0 — see header.
+EXTRA="${BENCH_EXTRA:-"{}"}"
+jq -e 'type == "object"' <<<"$EXTRA" >/dev/null 2>&1 || {
+    echo -e "${RED}BENCH_EXTRA must be a JSON object${NC}" >&2; exit 2; }
+SAMPLER="${BENCH_SAMPLER:-client}"
 TEMP="${BENCH_TEMP:-0.7}"
 TOP_P="${BENCH_TOP_P:-0.8}"
 TOP_K="${BENCH_TOP_K:-20}"
+TOOL_CHOICE="${BENCH_TOOL_CHOICE:-auto}"
+REPLAY_REASONING="${BENCH_REPLAY_REASONING:-0}"
 
 [[ -f "$FIXTURE" ]] || { echo -e "${RED}no fixture at $FIXTURE${NC}" >&2; exit 1; }
 command -v jq >/dev/null || { echo -e "${RED}jq is required${NC}" >&2; exit 1; }
@@ -113,7 +106,7 @@ N_TURNS=$(jq -r '.turns | length' "$FIXTURE")
 # Correctness counters are what gate. Anything non-zero in a *_bad counter fails.
 declare -i n_turns=0 n_http_bad=0 n_stream_bad=0 n_toolcall_missing=0
 declare -i n_toolargs_bad=0 n_schema_bad=0 n_finish_bad=0 n_cold_not_cold=0
-declare -i n_warm_not_warm=0 n_reasoning_ate_budget=0
+declare -i n_warm_not_warm=0 n_reasoning_ate_budget=0 n_wrong_tool=0 n_unexpected_call=0
 TTFT_MS=(); PROMPT_MS=(); GEN_TPS=(); HIT_RATIO=(); PROXY_MS=()
 
 # ── One streamed turn ─────────────────────────────────────────────────────────
@@ -159,15 +152,6 @@ stream_turn() {
 parse_turn() {
     local frames
     frames=$(grep '^data: ' "$SSE_FILE" | sed 's/^data: //' | grep -v '^\[DONE\]$')
-    R_CONTENT=$(jq -rj '.choices[0].delta.content // empty' <<<"$frames" 2>/dev/null)
-    # Captured so that "produced nothing" can be distinguished from "spent the
-    # whole token budget thinking". The server emits reasoning_content whenever it
-    # believes thinking is active — which it does even when the client appends
-    # /no_think, because that is a prompt-level soft switch the server never sees.
-    R_REASONING=$(jq -rj '.choices[0].delta.reasoning_content // empty' <<<"$frames" 2>/dev/null)
-    R_TOOLARGS=$(jq -rj '.choices[0].delta.tool_calls[0].function.arguments // empty' <<<"$frames" 2>/dev/null)
-    R_TOOLNAME=$(jq -r '.choices[0].delta.tool_calls[0].function.name // empty' <<<"$frames" 2>/dev/null | grep -v '^$' | head -1)
-    R_FINISH=$(jq -r 'select(.choices[0].finish_reason != null) | .choices[0].finish_reason' <<<"$frames" 2>/dev/null | head -1)
     # timings_per_token puts full server timings on every frame; the last is final.
     local t
     t=$(jq -c 'select(.timings) | .timings' <<<"$frames" 2>/dev/null | tail -1)
@@ -192,17 +176,22 @@ run_session() {
         turn=$(jq -c ".turns[$i]" "$FIXTURE")
         expect=$(jq -r '.expect' <<<"$turn")
 
-        msgs=$(jq -c --arg u "$(jq -r '.user' <<<"$turn")$THINK_SUFFIX" \
+        msgs=$(jq -c --arg u "$(jq -r '.user' <<<"$turn")" \
                     '. + [{role:"user",content:$u}]' <<<"$msgs")
 
+        local choice=null
+        [[ "$TOOL_CHOICE" == "turn" ]] && choice=$( [[ "$expect" == "tool_call" ]] && echo '"required"' || echo '"none"')
         body=$(jq -nc --arg m "$BENCH_INSTANCE" --argjson msgs "$msgs" \
                       --argjson tools "$TOOLS" --argjson mt "$MAX_TOKENS" \
-                      --argjson seed "$SEED" --argjson temp "$TEMP" \
-                      --argjson tp "$TOP_P" --argjson tk "$TOP_K" '{
+                      --argjson seed "$((SEED + iter))" --argjson extra "$EXTRA" \
+                      --argjson choice "$choice" --arg sampler "$SAMPLER" \
+                      --argjson temp "$TEMP" --argjson tp "$TOP_P" --argjson tk "$TOP_K" '{
             model: $m, messages: $msgs, tools: $tools,
             stream: true, timings_per_token: true,
-            max_tokens: $mt, seed: $seed,
-            temperature: $temp, top_p: $tp, top_k: $tk }')
+            max_tokens: $mt, seed: $seed }
+            + (if $sampler == "client" then {temperature: $temp, top_p: $tp, top_k: $tk} else {} end)
+            + (if $choice then {tool_choice: $choice} else {} end)
+            + $extra')
 
         stream_turn "$body"
         parse_turn
@@ -221,52 +210,23 @@ run_session() {
             continue
         fi
 
-        local note=""
-        # A turn that produced only reasoning and then hit the token ceiling is a
-        # specific, actionable failure — not a mysterious empty response. Naming
-        # it separately is the difference between "the model is broken" and "the
-        # token budget went to thinking the client believes is disabled".
-        if [[ "$R_FINISH" == "length" && -n "$R_REASONING" \
-              && -z "$R_TOOLARGS" && -z "$R_CONTENT" ]]; then
-            n_reasoning_ate_budget+=1
-            printf 'FAIL budget exhausted by reasoning (%d chars of reasoning_content, 0 of answer, finish=length)\n' \
-                "${#R_REASONING}"
+        judge_turn "$turn" "$SSE_FILE"
+        case "$VERDICT" in
+            missing)              n_toolcall_missing+=1 ;;
+            invalid_json)         n_toolargs_bad+=1 ;;
+            schema)               n_schema_bad+=1 ;;
+            wrong_tool)           n_wrong_tool+=1 ;;
+            unexpected_call)      n_unexpected_call+=1 ;;
+            no_content)           n_stream_bad+=1 ;;
+            reasoning_ate_budget) n_reasoning_ate_budget+=1 ;;
+        esac
+        if [[ "$VERDICT" != ok ]]; then
+            echo -e "${RED}FAIL $VERDICT${NC} $NOTE"
             continue
         fi
-
-        if [[ "$expect" == "tool_call" ]]; then
-            if [[ -z "$R_TOOLARGS" ]]; then
-                n_toolcall_missing+=1
-                printf 'FAIL no tool_call (finish=%s, reasoning=%d chars) content=[%s]\n' \
-                    "$R_FINISH" "${#R_REASONING}" "$(tr '\n' ' ' <<<"${R_CONTENT:0:160}")"
-                continue
-            fi
-            if ! jq -e . <<<"$R_TOOLARGS" >/dev/null 2>&1; then
-                n_toolargs_bad+=1
-                echo -e "${RED}invalid JSON args${NC} [$R_TOOLARGS]"
-                continue
-            fi
-            # Schema conformance: every required arg present.
-            local missing k
-            missing=""
-            while read -r k; do
-                jq -e --arg k "$k" 'has($k)' <<<"$R_TOOLARGS" >/dev/null 2>&1 || missing+=" $k"
-            done < <(jq -r '.required_args[]?' <<<"$turn")
-            if [[ -n "$missing" ]]; then
-                n_schema_bad+=1
-                echo -e "${RED}args missing:${NC}$missing"
-                continue
-            fi
-            [[ "$R_FINISH" == "tool_calls" ]] || { n_finish_bad+=1; note="finish=$R_FINISH "; }
-            note+="args=$R_TOOLARGS"
-        else
-            if [[ -z "$R_CONTENT" ]]; then
-                n_stream_bad+=1
-                printf 'FAIL no content (finish=%s, reasoning=%d chars)\n' \
-                    "$R_FINISH" "${#R_REASONING}"
-                continue
-            fi
-            note="${#R_CONTENT} chars"
+        local note="$NOTE"
+        if [[ "$expect" == "tool_call" && "$R_FINISH" != "tool_calls" ]]; then
+            n_finish_bad+=1; note="finish=$R_FINISH $note"
         fi
 
         # --- cache behaviour ---
@@ -316,9 +276,12 @@ run_session() {
         # Append the RECORDED turn, not the model's output — see header.
         local ra rt
         ra=$(jq -c '.replay_assistant' <<<"$turn")
+        if ((REPLAY_REASONING)) && [[ -n "$R_REASONING" ]]; then
+            ra=$(jq -c --arg r "$R_REASONING" '. + {reasoning_content: $r}' <<<"$ra")
+        fi
         msgs=$(jq -c --argjson a "$ra" '. + [$a]' <<<"$msgs")
         rt=$(jq -c '.replay_tool // empty' <<<"$turn")
-        [[ -n "$rt" && "$rt" != "null" ]] && msgs=$(jq -c --argjson t "$rt" '. + [$t]' <<<"$msgs")
+        [[ -n "$rt" && "$rt" != "null" ]] && msgs=$(jq -c --argjson t "$rt" '. + ($t | if type == "array" then . else [.] end)' <<<"$msgs")
     done
 }
 
@@ -343,7 +306,7 @@ echo -e "${BLUE}Agent workload benchmark${NC}"
 echo -e "  instance:  $BENCH_INSTANCE (:$PORT, $INST_CONTEXT_PER_REQUEST tok/req x $INST_PARALLEL_SLOTS slots)"
 echo -e "  fixture:   $FIXTURE ($N_TURNS turns)"
 echo -e "  iterations: $ITERATIONS x (cold + warm)"
-echo -e "  thinking:  $( ((NO_THINK)) && echo 'off (/no_think appended, as the app does)' || echo 'ON (no /no_think — the #20345 A/B arm)')"
+echo -e "  request:   extra=$EXTRA sampler=$SAMPLER tool_choice=$TOOL_CHOICE replay_reasoning=$REPLAY_REASONING"
 echo ""
 
 for ((it = 1; it <= ITERATIONS; it++)); do
@@ -367,9 +330,11 @@ jq -n \
         --argjson total "$INST_TOTAL_CONTEXT" \
         --arg ctk "$INST_CACHE_TYPE_K" --arg ctv "$INST_CACHE_TYPE_V" \
         --arg build "$(remote_exec "curl -sf -H 'Authorization: Bearer $KEY' http://127.0.0.1:$PORT/props" 2>/dev/null | jq -r '.build_info // "unknown"')" \
-        --argjson nothink "$NO_THINK" \
+        --argjson extra "$EXTRA" --arg sampler "$SAMPLER" --arg choice "$TOOL_CHOICE" \
+        --argjson replay "$REPLAY_REASONING" \
         '{contextPerRequest:$cpr, parallelSlots:$slots, totalContext:$total,
-          cacheTypeK:$ctk, cacheTypeV:$ctv, build:$build, noThink:($nothink==1)}')" \
+          cacheTypeK:$ctk, cacheTypeV:$ctv, build:$build, extra:$extra,
+          sampler:$sampler, toolChoice:$choice, replayReasoning:($replay==1)}')" \
   --argjson correctness "$(jq -nc \
         --argjson turns "$n_turns" --argjson http "$n_http_bad" \
         --argjson stream "$n_stream_bad" --argjson missing "$n_toolcall_missing" \
@@ -377,8 +342,10 @@ jq -n \
         --argjson finish "$n_finish_bad" --argjson cold "$n_cold_not_cold" \
         --argjson warm "$n_warm_not_warm" \
         --argjson reason "$n_reasoning_ate_budget" \
+        --argjson wrong "$n_wrong_tool" --argjson unexpected "$n_unexpected_call" \
         '{turns:$turns, httpErrors:$http, streamingBroken:$stream,
-          toolCallMissing:$missing, toolArgsInvalidJson:$args,
+          toolCallMissing:$missing, wrongToolName:$wrong, unexpectedToolCall:$unexpected,
+          toolArgsInvalidJson:$args,
           toolArgsSchemaMismatch:$schema, finishReasonWrong:$finish,
           coldTurnWasCached:$cold, warmTurnNotCached:$warm,
           budgetExhaustedByReasoning:$reason}')" \
