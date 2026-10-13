@@ -160,6 +160,11 @@ for name in "${INSTANCE_NAMES[@]}"; do
     # What a client actually gets. Read on the target's loopback port, so this
     # works regardless of what the reverse proxy exposes.
     key=$(remote_conf_value "$conf" LLAMA_API_KEY)
+    if [[ -n "$key" && "$cmdline" == *"$key"* ]]; then
+        bad "the API key is on the process command line, readable by any local user"
+    else
+        ok "the API key is not on the process command line"
+    fi
     props=$(remote_exec "curl -sf -H 'Authorization: Bearer $key' http://127.0.0.1:$INST_PORT/props" 2>/dev/null || echo "")
     slot_ctx=$(jq -r '.default_generation_settings.n_ctx // empty' <<<"$props" 2>/dev/null || echo "")
     if [[ -n "$slot_ctx" ]]; then
