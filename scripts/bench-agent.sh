@@ -178,6 +178,7 @@ run_session() {
 
         msgs=$(jq -c --arg u "$(jq -r '.user' <<<"$turn")" \
                     '. + [{role:"user",content:$u}]' <<<"$msgs")
+        msgs=$(jq -c --argjson h "$(jq -c '.history // []' <<<"$turn")" '. + $h' <<<"$msgs")
 
         local choice=null
         [[ "$TOOL_CHOICE" == "turn" ]] && choice=$( [[ "$expect" == "tool_call" ]] && echo '"required"' || echo '"none"')
