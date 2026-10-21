@@ -1,0 +1,483 @@
+# Embeddings, reranking and Jev-style decisions — implementation spec
+
+Status: **planned, not started.** Research done 2026-10-03; handed off 2026-10-07.
+Scope agreed with the user: **one PR, the full plan below.**
+
+This doc is written for an agent picking the work up cold. Read `CLAUDE.md` first
+(architecture, the core context invariant, conventions, "a standing caution").
+Every number below says where it came from; anything not measured is marked
+UNMEASURED. Web-sourced facts were true on 2026-10-03 — re-check build numbers and
+image tags before relying on them.
+
+---
+
+## 1. Why
+
+The consuming apps want three new capabilities from the llama-server target:
+
+1. **Embeddings** for knowledge stores (RAG / semantic search).
+2. **Reranking** of retrieved chunks.
+3. **"Jev-like" typed decisions.** Jev is TypeSafe AI's "System One" model
+   (https://typesafe.ai/blog/introducing-system-one-models-and-jev). You send a
+   `state` plus predefined questions and get back typed answers with probabilities,
+   generating no text:
+   - `choice`: pick one of N labelled options
+   - `score`: an ordinal level
+   - `noul`: P(true)
+
+   Jev itself is **API-only**: no weights, no self-hosting.
+
+All three can be served by **llama-server alone**, inside this repo's existing
+one-instance-per-model design. On 2026-10-02, llama.cpp merged a TypeSafe-compatible
+`POST /v1/systemone` endpoint for open "decision models" (PR #29818, first in
+release b11361).
+
+## 2. Decisions already made (do not re-litigate)
+
+| Decision | Choice |
+|---|---|
+| Embedding model | Qwen3-Embedding-4B, Q8_0 |
+| Reranker | Qwen3-Reranker-0.6B, Q8_0 |
+| Decision model | Kev-4B, Q8_0, served via native `/v1/systemone` |
+| llama.cpp version | **Upgrade every instance**, chat included, to one pinned current image |
+| Adding instances | `deploy-llama.sh` learns to **create** new instances, including their nginx + `models.json` router entries |
+| Calibration | Tooling included. Fitted temperatures are applied **both** ways: a global per-question-type temperature baked into the served GGUF, plus per-task temperatures reported for the app to apply |
+| Calibration labels | JSONL exported by the consuming app. This repo ships only a small test fixture |
+| CI | None added. Repo has no `.github/`; local test runs only, output pasted into the PR body |
+| Delivery | One branch, one PR. No direct push to main |
+
+Rejected options, and why:
+- **vLLM, SGLang or transformers for Jev clones.** None has been proven on gfx1151, and each would need a second unit template.
+- **Logprob tricks on Qwen3 chat.** More code for us to own, and native support now exists.
+- **OpenJev.** It is CC BY-NC, so non-commercial only.
+
+## 3. Current state of the target (read over SSH on 2026-10-03, read-only)
+
+Access: `remote.host` / `remote.user` were `192.168.1.168` / `walkerobrien` in git
+history (`git log -p -S'host:' -- config/`). `.env` has `LLM_HOST`, `LLAMA_API_KEY`,
+`SSH_PASS`. The local `config/llama.yaml` **does not exist** (gitignored). Rebuild it
+from the live confs below, with `make setup` and the example file as the schema.
+`yq` v4.54.1 was installed locally via brew.
+
+**Hardware.** AMD Strix Halo (gfx1151), podman (no docker).
+
+| Memory | Total | Used | Source |
+|---|---|---|---|
+| VRAM | 96G | 41G | `/sys/class/drm/card0/device/mem_info_vram_*` |
+| GTT | 30G | — | sysfs |
+| System RAM | 30G | — | `free -g` |
+
+nginx is 1.30.5 with `ngx_http_js_module`.
+
+**Image.** Every instance runs `docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv`.
+That is a *floating* tag. On the box it is `llama-server --version` → **7966 (8872ad212)**.
+
+**Instances** (`/opt/llm/instances/*.conf`). All three run
+`llama-server@<name>.service`, active.
+
+| name | port | model_file | CONTEXT_SIZE | slots | threads gen/batch/http |
+|---|---|---|---|---|---|
+| qwen3-14b-1m | 8081 | Qwen3-14B-Q4_K_M.gguf | 40960 | 1 | 16/12/4 |
+| qwen3-14b | 8082 | Qwen3-14B-Q4_K_M.gguf | 131072 | 8 | 16/12/6 |
+| qwen3-8b | 8083 | Qwen3-8B-Q4_K_M.gguf | 32768 | 8 | 8/6/4 |
+
+Settings shared by all three:
+- `BATCH_SIZE=UBATCH_SIZE=2048`, `CACHE_REUSE=256`
+- `CACHE_TYPE_K=CACHE_TYPE_V=q8_0`, `FLASH_ATTN=false`
+- `DRAFT_MODEL=` (empty), `DRAFT_MAX=16`
+
+`context_per_request` is `CONTEXT_SIZE / slots`: 40960, 16384 and 4096 respectively.
+
+Models in `/opt/llm/models`:
+- `DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf`
+- `Qwen3-14B-Q4_K_M.gguf`
+- `Qwen3-8B-Q4_K_M.gguf`
+
+`hf` CLI is at `~/.local/bin/hf`.
+
+**Router.** Target-owned; not in this repo, now or in git history.
+- `/etc/nginx/njs/llama-router.js` (static):
+  - `routeRequest` parses `body.model` (falling back to `_default`) and looks it up in `/etc/llama-router/models.json`.
+  - It then calls `r.internalRedirect('@backend_' + target.replace(/[^a-zA-Z0-9_]/g,'_'))`.
+  - `listModels` serves `/v1/models` from the same map.
+- `/etc/nginx/conf.d/llama-router.conf`:
+  - Header comment says "Generated by deploy-llama.sh". **That generator was deleted in commit `ccb5cff`**.
+  - Has `location = /v1/chat/completions` and a catch-all `location /v1/`, both calling `js_content llama_router.routeRequest`.
+  - **So `/v1/embeddings`, `/v1/rerank`, `/v1/systemone` route with no njs change.**
+  - Has one `location @backend_127_0_0_1_<port> { internal; proxy_pass http://127.0.0.1:<port>; … }` block per backend. Copy one verbatim as the template. Each ends with `gzip off;\n    }`, and the file ends with the server block's `}`.
+- `/etc/llama-router/models.json`:
+  ```json
+  {"qwen3-14b-1m":"127.0.0.1:8081","qwen3-14b":"127.0.0.1:8082","qwen3-8b":"127.0.0.1:8083","_default":"127.0.0.1:8081"}
+  ```
+  Owned by `walkerobrien`; the nginx conf is owned by root.
+- `/etc/llama-router/api-key` exists (root 600).
+
+## 4. Repo facts the change touches
+
+From a full sweep. Line numbers as of commit `cc89eb5`.
+
+- **Schema.** `config/llama.example.yaml` has `remote`, `runtime`, `defaults`, `instances`, `resources`. There is no `kind`/`pooling`/`extra_args` key.
+  - Unknown keys are silently ignored.
+  - `_ivalue` (`common.sh:180-189`) merges instance > defaults using `has()`.
+- **`load_instance`** (`scripts/lib/common.sh:195-285`) requires every key:
+  - ints: port, context_per_request, parallel_slots, batch/ubatch, threads×3, cache_reuse, draft_max
+  - enums: kv_unified, flash_attn, cache types
+  - strings: model_file, container_image
+  - checks: `ubatch ≤ batch`, `cache_type_k == cache_type_v`
+  - It derives `INST_TOTAL_CONTEXT`.
+- **`deploy-llama.sh`**:
+  - `render_instance_conf` (42-66) is a fixed list of 17 variables.
+  - `render_unit` (75-120) refuses any unresolved `@…@`.
+  - `check_derivation` (134-157) is the PAD256 invariant.
+  - **New-instance refusal** at 182-188.
+  - Router map check at 191-204: a missing entry warns, a port mismatch is fatal.
+  - Unit diff at 210-225; API key read back at 226-231.
+  - Change detection at 232-258: a unit change restarts everything.
+  - Rollback machinery: `rb`, `run_rollback`, `trap ERR`.
+  - `health_check` (`/health` plus an NRestarts crash-loop check).
+  - `remote_write_sudo` for writes. **Never pipe file content through `remote_exec_sudo`** (it eats stdin for `sudo -S`).
+- **Unit template.** `templates/llama-server@.service.in` is the argv. It builds `FA_ARG` and `DRAFT_ARGS` in `/bin/sh -c`. It passes `--no-mmap`, a bare `-fa`, `--draft-max`, `--cont-batching`, `--cache-prompt` and `--metrics`.
+- **Verify.** `scripts/verify-deploy.sh` hits each backend **on loopback over SSH**, not through the router. It checks:
+  - unit active
+  - conf values
+  - live `-c`/`-np` from the MainPID cmdline
+  - `/props .default_generation_settings.n_ctx`
+  - `/slots` count and each `n_ctx`
+  - a **real streamed tool call** (`assert_streamed_tool_call`, lines 41-92)
+  - the router map entry
+- **Live tests that assume chat:**
+  - `tests/test-knob-propagation.sh`: argv greps at 100-145, and chat cache reuse `timings.cache_n > 0` at 154-169.
+  - `tests/test-model-selection.sh`: chat on every instance at 83-102; uses `/v1/models` `data[0]`/`data[1]`.
+  - `test-context-window.sh`, `test-verify-detects-drift.sh`, `bench-agent.sh`, `benchmark.sh` are single-instance and chat-only. They're fine if not pointed at a non-chat instance.
+- **Offline suite.** `tests/test-render.sh`:
+  - fixtures `tests/fixtures/{amd,nvidia}.yaml`
+  - goldens `tests/golden/{amd.base,amd.overridden,nvidia.shared}.conf`
+  - `test_example_documents_every_key` (341) hard-codes the key list
+  - `test_unit_leaves_per_instance_values_to_systemd` (442)
+- **Model scripts.**
+  - `scripts/add-model.sh` runs `hf download <repo> <file> --local-dir /opt/llm/models`. `MODELS_DIR` is hardcoded at line 12.
+- **Stale doc.** `specs/context-window-deploy.md:80` says the unit template is target-owned. It isn't; fix it.
+
+## 5. External facts (research 2026-10-03; re-verify versions)
+
+### llama.cpp master vs our b7966 — our argv BREAKS on upgrade
+Source: `common/arg.cpp` at master `836d571`.
+
+**Removed or changed:**
+- **`--no-mmap` is gone.** Use `-lm/--load-mode none` (other values: `mmap|mlock|mmap+mlock|dio|auto`; default `auto`).
+- **`--draft-max` is removed** via `arg_removed`. Use `--spec-draft-n-max`.
+- **`-fa` requires `on|off|auto`.** The parser takes the next argv item as its value, so a bare `-fa -c …` fails.
+
+**Still accepted:**
+- `-md` (now `--spec-draft-model`) and `-ngld` (now `--spec-draft-ngl`) remain as aliases.
+- Unchanged: `-a/--alias`, `-ngl`, `-c`, `-b`, `-ub`, `-t`, `-tb`, `--threads-http`, `-ctk/-ctv`, `--cache-reuse`, `--metrics`.
+- `--cont-batching` and `--cache-prompt` are still valid and on by default.
+
+**Defaults that changed:**
+- `-np` defaults to auto: 4 slots with `kv_unified=true`. **Passing `-np` explicitly keeps `kv_unified=false`**, so the core invariant holds: `n_ctx_seq = PAD256(n_ctx/n_seq_max)` (`src/llama-context.cpp` ~290-306).
+- `/props` n_ctx and `/slots[].n_ctx` both come from `n_ctx_slot() = min(n_ctx_seq, kv_unified_per_slot, n_ctx_train)`. New consequence: a `context_per_request` above the model's training context shows up as `n_ctx_train` in `/slots`. `make verify` catches this; deploy does not refuse it.
+- Jinja is still on by default.
+- `reasoning_format` defaults to `deepseek`.
+- `-rea/--reasoning` defaults to `auto`. Watch Qwen3 tool calling after the upgrade.
+
+**`flash_attn: false` must stay "emit nothing" (= auto).** Mapping it to `-fa off`
+would refuse to start every instance, because quantized V cache requires FA. Only
+`true` changes, to `-fa on`. The existing documented gotcha stays as is.
+
+### Embeddings and rerank on llama-server
+Sources: `tools/server/README.md`, `server-context.cpp`, `common/arg.cpp`.
+
+**Flags:**
+- `--embedding` makes the server embeddings-only. Dedicated server per embedding model; don't mix with chat.
+- `--rerank` implies embedding mode with `pooling=rank`.
+- `--pooling` defaults to the value in GGUF metadata (`last` for Qwen3-Embedding).
+
+**Batch and context limits:**
+- With embeddings, the server forces `n_batch = n_ubatch`.
+- Non-causal models must fit each input in one ubatch. Qwen3 `last` pooling and causal rank may split across ubatches.
+- Each input must also fit the per-slot context.
+
+**Endpoints:**
+
+| Endpoint | Request | Notes |
+|---|---|---|
+| `POST /v1/embeddings` | `input` (string or array) | Errors if pooling is `none`. Output is L2-normalised by default |
+| `/rerank`, `/v1/rerank` | `{query, documents[], top_n}` | Returns 501 unless the server runs in rank mode |
+
+**Wrong pooling fails silently**, producing plausible vectors and bad retrieval.
+Verify by behaviour (similarity ordering), never by flags.
+
+**Qwen3-Embedding queries.** Prefix queries with `Instruct: {task}\nQuery:{q}`; documents get no prefix. The consuming app must do this.
+
+**Known issue:** #15406 (`/v1/embeddings` returning 501 with `--embeddings` on some builds after b5630) is open with no response. The verify check will catch it if it hits.
+
+### `/v1/systemone` (PR #29818, merged 2026-10-02 by ngxson)
+Sources: PR page, `tools/server/README.md`, `tools/server/server-decision.{h,cpp}`.
+
+**Supported models:** laya, julia-1, lev, openjev, kev. Follow-ups add clef (#29831) and nimble (#29844).
+
+**Releases:**
+- First release with the PR: b11361.
+- Laya over-ubatch abort (#29902): fixed in **b11379** (#29903).
+- A "model-agnostic" redesign is in draft (#29832). **The API may change**, so pin the image.
+
+**Request** (README example):
+```json
+{"state":"Customer message: I was charged twice for my order last week and nobody has replied.",
+ "questions":{
+  "route":{"type":"choice","instructions":"Which team should handle this?","criteria":{"billing":null,"shipping":null,"technical":null}},
+  "angry":{"type":"noul","instructions":"Is the customer angry?"},
+  "urgency":{"type":"score","instructions":"How urgent is this?","criteria":["can wait","this week","today","right now"]}}}
+```
+
+**Response:**
+```json
+{"model":"openjev","answers":{
+  "route":{"type":"choice","choice":"billing","probabilities":{"billing":0.9998,"shipping":0.0001,"technical":0.0001},"confidence":0.9997},
+  "angry":{"type":"noul","noul":0.6328},
+  "urgency":{"type":"score","score":2.0858,"legend":{"0":"can wait","1":"this week","2":"today","3":"right now"},"probabilities":{"0":0.0023,"1":0.116,"2":0.6753,"3":0.2064},"confidence":0.673}},
+ "usage":{"input_tokens":239,"output_tokens":0}}
+```
+
+**Behaviour and limits:**
+- No streaming. Optional `images` (needs `--mmproj`; not Kev).
+- A non-decision model returns **501** ("This model is not a decision model").
+
+**Kev specifics:**
+- Arch `qwen35`; converter `conversion/lev.py` `KevModel`.
+- Embedding mode is enabled **automatically** with pooling none, so no flag is needed. `n_batch` is forced to `n_ubatch`, and question + options must fit one ubatch.
+- Up to 255 options, 1 prompt variant.
+- `-np` matters: shared-prompt grouping uses `n_parallel`.
+
+**Temperatures:**
+- Stored in GGUF metadata as `qwen35.decision.temperature.{choice,score,noul}` (float32).
+- Lookup order: `<type>.<bucket>`, then `<type>`, then 1.0.
+- Applied as softmax(s/T) **before** averaging variants.
+- No request field or CLI override. `--override-kv` doesn't reach them, because they're read as raw metadata.
+- `gguf-py`'s `gguf_set_metadata.py` (console script `gguf-set-metadata`) can edit an **existing** float key in place. `gguf_new_metadata.py` cannot add new keys.
+
+**Equivalence (inferred from source, exact for 1 variant):** for Kev, post-hoc
+`softmax(log p / T')` equals serving with stored temperature `T·T'`. It does
+**not** hold for multi-variant models (LEV choice uses 2 variants). After rescaling,
+recompute `confidence`, `score` and `noul` from the new probabilities.
+
+### Models (HF API, 2026-10-03)
+
+| Instance | HF repo | File | Size | License |
+|---|---|---|---|---|
+| embedding | `Qwen/Qwen3-Embedding-4B-GGUF` | `Qwen3-Embedding-4B-Q8_0.gguf` | 4081 MiB | Apache-2.0 |
+| rerank | `ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF` | `qwen3-reranker-0.6b-q8_0.gguf` | 609 MiB | Apache-2.0 |
+| decision | `ggml-org/Kev-4B-GGUF` | Q8_0 (check exact filename) | 4.48 GB | Apache-2.0 (original `jaredpalmer/kev-4b`, a LoRA on Qwen3.5-4B-Base) |
+
+From the Kev model card, **not verified by us**:
+- 1–255 options; 65,536 context (validated at 8,192)
+- ECE 0.017–0.101; 0.838 on "Transfer-v4"
+
+Dimensions (from model knowledge, **confirm on the card**): Qwen3-Embedding-4B is 2560-d with a 32k context.
+
+### Calibration background
+
+**Jev's own calibration.** An independent audit roundup (https://www.beri.net/article/typesafe-jev-typed-decision-model-calibration-decomposition-shadow-eval) reports:
+- ECE 0.107 on 900 tickets.
+- Fitted temperatures: **0.66** for noul, **3.29** for choice, **3.40** for score.
+
+So one temperature per question type is the expected fix.
+
+**Recipe:**
+1. Fit T by NLL.
+2. Report ECE (15 bins), Brier and NLL.
+3. Size the data: about 1,000 held-out labels per task. Even 900 labels left a 0.024 ECE noise floor, so don't trust differences below about 0.03.
+
+## 6. Design
+
+### A. Image upgrade and argv fixes
+- **Pin the image.** Set `defaults.container_image` to the newest *timestamped* kyuz0 tag, e.g. `vulkan-radv_20261003T190907` (re-check Docker Hub). Confirm `llama-server --version` inside it is ≥ b11379 (`podman run --rm <img> llama-server --version`). Pinning turns rollback into a one-line revert.
+- **Template flag changes:**
+  - `--no-mmap` → `-lm none`
+  - `--draft-max` → `--spec-draft-n-max`
+  - `FLASH_ATTN=true` → `-fa on`; false still emits nothing
+- **Image pre-pull.** When `CONTAINER_IMAGE` changes, deploy pre-pulls it on the target before any restart. A cold pull otherwise races `TimeoutStartSec=600`.
+
+### B. Instance kinds
+- **New key** `kind: chat | embedding | rerank | decision`, with `defaults.kind: chat`.
+  - Validated with `_require_enum` in `load_instance`.
+  - Rendered as `KIND=` in `render_instance_conf`.
+- **Template.** Add a `KIND_ARGS` conditional next to `FA_ARG`/`DRAFT_ARGS`:
+
+  | kind | KIND_ARGS |
+  |---|---|
+  | embedding | `--embedding` |
+  | rerank | `--rerank` |
+  | chat | nothing |
+  | decision | nothing (auto-detected) |
+
+- **No pooling knob.** GGUF defaults are right for both models; verify proves it.
+- All other keys stay required for every kind. Defaults cover them; don't special-case validation (YAGNI).
+
+### C. Deploy creates missing instances
+Replace the refusal at `deploy-llama.sh:182-188`. For an instance with no conf on the target:
+1. **API key.** Reuse `LLAMA_API_KEY` read from an existing instance conf (`remote_conf_value`). If none exists, refuse: never disable auth.
+2. **Write the conf** with `remote_write_sudo`.
+3. **Start it:** `systemctl enable --now llama-server@<name>`, then the existing `health_check`.
+4. **Router entries, only once healthy**, so nginx never points at a dead backend:
+   - `jq`-merge `"<name>":"127.0.0.1:<port>"` into `models.json`, preserving `_default` and existing keys.
+   - Render `@backend_127_0_0_1_<port>` from a new `templates/nginx-backend.conf.in` (port placeholder only; copied from the live block). Insert it before the server block's final `}`. Skip if a block for that port already exists.
+   - Run `nginx -t`, then `systemctl reload nginx`.
+5. **Rollback.** Every step registers an undo via `rb`, in reverse order:
+   - restore the `models.json` and nginx conf backups, then reload nginx
+   - `systemctl disable --now` the new unit
+   - remove the new conf
+6. **Dry run.** `deploy-dry` shows the instance as `NEW` and prints the nginx and `models.json` diffs.
+
+The port-mismatch refusal stays.
+
+### D. Verification by kind
+**`verify-deploy.sh`** (loopback). Keep the yaml/conf/argv/`/props`/`/slots` checks for every kind, then dispatch on `KIND`:
+
+| kind | Check |
+|---|---|
+| chat | Existing `assert_streamed_tool_call` |
+| embedding | One `POST /v1/embeddings` with three inputs: an `Instruct:`-prefixed query, a relevant doc, an irrelevant doc. Assert 3 vectors, equal dimension, each L2 norm ≈ 1, and `cos(q,rel) > cos(q,irr)`. This catches wrong pooling. |
+| rerank | `POST /v1/rerank` with a query and docs; assert the relevant doc ranks first |
+| decision | The README billing example above. Assert `answers.route.choice == "billing"`, choice probabilities sum ≈ 1, `usage.output_tokens == 0` |
+
+**`test-model-selection.sh`** (public router via `LLM_HOST`):
+- Chat loops pick chat instances **from config**, not by `/v1/models` position.
+- Add one embeddings call, one rerank call and one systemone call **through the router**. This proves the path consumers use.
+- Add one `/v1/systemone` call to a chat model, expecting 501.
+
+**`test-knob-propagation.sh`:**
+- The cache-reuse assertion runs only for `kind: chat`.
+- Argv greps use the new spellings.
+
+### E. Calibration tooling (bash + jq, matching the repo; no new local deps)
+
+**Input.** `labels.jsonl` from the app, one decision per line:
+```json
+{"task":"ticket-routing","state":"...","questions":{"route":{...},"angry":{...}},"gold":{"route":"billing","angry":true,"urgency":2}}
+```
+
+**`scripts/calibrate-decisions.sh`, run as `make calibrate LABELS=path`:**
+1. **Validate.** Refuse rows with missing `gold`, gold keys not in `questions`, or gold values not among the options.
+2. **Query.** Call `/v1/systemone` through the router (`LLM_HOST`, `LLAMA_API_KEY`, `model: <decision instance>`) and record the probabilities.
+3. **Fit.** For each (task, question type) and globally per question type, fit T by NLL grid search over `softmax(log p / T)`. noul is a 2-class `[1-p, p]`.
+4. **Report** ECE (15 bins, top-1), Brier and NLL, before → after.
+5. **Write outputs:**
+   - `specs/decision-calibration.md`: generated; do not hand-edit (same rule as `specs/kv-quant-study.md`).
+   - `bench/decision-temperatures.json`: `{global:{choice,score,noul}, tasks:{<task>:{<type>:T}}}`. Task temperatures are **relative to the baked global** (`T_task/T_global`), so the app applies them on top of the calibrated model. This composition is exact for Kev only.
+
+**`make calibrate-bake`:**
+1. On the target, copy the Kev GGUF to `<file>.cal-<YYYYMMDD>.gguf`.
+2. Set `qwen35.decision.temperature.{choice,score,noul}` = stored × global with `gguf-set-metadata --force`, run via `pipx run --spec gguf` or `uvx --from gguf`.
+   - Check what the target has. If neither exists, refuse with a clear message.
+   - **Do not** run the tool through `remote_exec_sudo` with piped input.
+3. Print the new filename. The user sets `model_file`, then runs `make deploy` and `make verify`.
+
+## 7. Execution order — strict TDD
+
+Global rules apply: write one failing test, see it red, make the minimal change, see it green. Run `make test-unit` after every change. Edit only via Edit/Write (a hook enforces this). Regenerate goldens with `make test-unit-accept` and **read the diff**.
+
+**Offline.** In `tests/test-render.sh`, plus a new `tests/test-calibration.sh` wired into `make test-unit`. Follow the house style: a plain bash pass/fail counter, non-zero exit on any failure, and refuse unknown test names.
+
+1. An unknown `kind` is refused by `deploy --check`.
+2. A missing `kind` renders `KIND=chat`. Update the goldens and `test_example_documents_every_key`.
+3. `embedding`, `rerank` and `decision` render their `KIND=` (add instances to `tests/fixtures/amd.yaml`).
+4. **Behavioural argv test.** Execute the rendered unit's `sh -c` wrapper with a stub `@ENGINE_BIN@` that prints its argv. Assert:
+   - `--embedding` / `--rerank` / neither, by `KIND`
+   - `-fa on` only when `FLASH_ATTN=true`, and nothing when false
+   - `-lm none` present and `--no-mmap` absent
+   - `--spec-draft-n-max` present when a draft model is set
+5. **nginx insert.** Fixture `tests/fixtures/llama-router.conf` (copy of the live file) plus a new port 8085 must match a golden. A port already present is a no-op.
+6. **`models.json` merge.** It adds the entry and keeps `_default`. A port mismatch is still refused.
+7. **Calibration math** on recorded-probability fixtures:
+   - overconfident → T > 1 and ECE drops
+   - already calibrated → T ≈ 1
+   - T = 1 is the identity
+   - a malformed row is refused
+
+**Live (needs the target):**
+
+8. `tests/test-verify-detects-drift.sh`: add one case where the embedding instance runs with `--pooling none` and `make verify` must go **red**.
+
+## 8. Files to change
+
+| File | Change |
+|---|---|
+| `scripts/lib/common.sh` | `kind` |
+| `scripts/deploy-llama.sh` | `KIND=`, image pre-pull, new-instance bootstrap, router render/apply/rollback |
+| `templates/llama-server@.service.in` | Argv fixes, `KIND_ARGS`; update the header comments |
+| `templates/nginx-backend.conf.in` | New |
+| `scripts/verify-deploy.sh` | Per-kind checks |
+| `scripts/calibrate-decisions.sh` | New |
+| `Makefile` | `calibrate`, `calibrate-bake`; new suite in `test-unit` |
+| `tests/test-render.sh`, `tests/test-calibration.sh` (new), `tests/test-model-selection.sh`, `tests/test-knob-propagation.sh`, `tests/test-verify-detects-drift.sh` | Tests from section 7 |
+| `tests/fixtures/` (`amd.yaml`, `llama-router.conf`, calibration fixtures), `tests/golden/*` | Fixtures and goldens |
+| `config/llama.example.yaml` | `kind`, pinned image, example embedding/rerank/decision instances. Update the comment saying deploy doesn't manage the router map |
+| `CLAUDE.md`, `README.md`, `specs/context-window-deploy.md` | See below |
+
+Doc changes in `CLAUDE.md`, `README.md` and `specs/context-window-deploy.md`:
+- instance kinds
+- deploy now writes router entries
+- the new flag spellings
+- consumer open items: the Qwen3-Embedding query prefix, the `/v1/systemone` contract, and how to apply per-task temperatures
+- fix the stale line 80
+
+## 9. Rollout
+
+1. `make lint && make test-unit` green. Commit on a branch and open a PR.
+2. Rebuild the gitignored `config/llama.yaml` from §3, plus the new instances below. Sizes are **UNMEASURED starting points**; retune from `make status`.
+
+   | name | port | kind | context_per_request | parallel_slots | batch/ubatch |
+   |---|---|---|---|---|---|
+   | qwen3-embedding-4b | 8084 | embedding | 8192 | 4 | default (2048) |
+   | qwen3-reranker-0.6b | 8085 | rerank | 8192 | 4 | default |
+   | kev-4b | 8086 | decision | 8192 | 4 | 8192 / 8192 |
+
+3. `make add-model REPO=… MODEL=…` for each of the three GGUFs.
+4. **Baseline before upgrading:** `make benchmark` and `make bench-agent` on the current b7966.
+5. `make deploy-dry`. Expect: unit CHANGED, image changed, 3 NEW instances, **all 6 restarting**. Read the nginx and `models.json` diffs.
+6. `make deploy`. **Ask the user first, in the moment.** It restarts the production chat instances; rollback is armed.
+7. `make verify && make test-models && make test-knobs && make test-drift && make test-context` must all be green.
+8. **Chat regression on the new build:**
+   - compare `make benchmark` to step 4
+   - pass the `make bench-agent` gate
+   - in `make status`, confirm `flash-at` resolved and record the new instances' VRAM in the spec
+9. When the app's labels exist: `make calibrate`, then `make calibrate-bake`, then switch `model_file`, then `make deploy`, then `make verify`.
+10. Paste the live-test output into the PR body.
+
+## 10. Risks and open items
+
+- **The `/v1/systemone` endpoint is days old**, and a redesign is in draft (#29832). The pinned image plus the verify contract check protect us; re-pin deliberately.
+- **Qwen3 on the new build** defaults to `--reasoning auto`.
+  - Gates: tool-call verify, `bench-agent`, `test-context`.
+  - `-rea off` is already an open item in `specs/context-window-deploy.md`.
+- **Kev's accuracy and calibration on our tasks are unknown.** Card figures are self-reported; `make calibrate` produces ours.
+- **Memory and latency of the three new instances are UNMEASURED.** Roughly 9 GB of weights against about 55 GB free VRAM; KV and compute are extra.
+- **Failure modes not covered by deploy:**
+  - `context_per_request` above a model's training context is clamped by the server, and only verify catches it.
+  - An embedding input longer than the per-slot context returns a per-request 500, not a crash.
+
+## 11. Research sources
+
+- llama.cpp:
+  - `tools/server/README.md`, `tools/server/server-decision.{h,cpp}`, `server-context.cpp`, `common/arg.cpp`, `src/llama-context.cpp`, `conversion/lev.py`
+  - PRs #29818, #29831, #29844, #29903; issues #29902, #29832, #15406
+- Images:
+  - https://github.com/kyuz0/amd-strix-halo-toolboxes
+  - https://hub.docker.com/r/kyuz0/amd-strix-halo-toolboxes/tags
+- Models:
+  - https://huggingface.co/ggml-org/Kev-4B-GGUF
+  - https://huggingface.co/jaredpalmer/kev-4b
+  - https://huggingface.co/Qwen/Qwen3-Embedding-4B-GGUF
+  - https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
+- TypeSafe and Jev:
+  - https://typesafe.ai/blog/introducing-system-one-models-and-jev
+  - https://docs.litellm.ai/blog/typesafe_jev
+  - https://github.com/typesafe-ai/system-one-adapter-python (MIT; verbalized probabilities, no logprobs)
+- Calibration:
+  - RLCR, https://arxiv.org/abs/2507.16806
+  - "Calibrate Before Use", https://arxiv.org/abs/2102.09690
+  - Jev audit roundup (§5)
+- Alternatives considered and rejected:
+  - `AlexWortega/openjev`, `autotrust/JEV`, `juspay/jev-one`, `openjev/openjev-GGUF` (CC BY-NC)
+  - vLLM on gfx1151: https://github.com/kyuz0/amd-strix-halo-vllm-toolboxes
