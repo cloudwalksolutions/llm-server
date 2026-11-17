@@ -8,10 +8,9 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 BENCH_LABEL="${BENCH_LABEL:-current}"
 BENCH_OUT="${BENCH_OUT:-bench}"
-# Which instance to load. Its slot count sets the VU ceiling.
-BENCH_INSTANCE="${BENCH_INSTANCE:-qwen3-14b}"
-
 load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
+# Which instance to load. Its slot count sets the VU ceiling.
+BENCH_INSTANCE="${BENCH_INSTANCE:-$ROUTER_DEFAULT}"
 load_instance "$BENCH_INSTANCE" || exit 1
 
 if [[ -n "${LLM_ENDPOINT:-}" ]]; then

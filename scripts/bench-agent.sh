@@ -60,16 +60,9 @@ esac
 
 load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
 
-# Default to the instance the tool-using agent actually uses. The k6 harness
-# defaults to qwen3-14b, which is the coach (no tools) — the wrong target for
-# this suite.
-BENCH_INSTANCE="${BENCH_INSTANCE:-qwen3-14b-1m}"
+BENCH_INSTANCE="${BENCH_INSTANCE:-$ROUTER_DEFAULT}"
 FIXTURE="${FIXTURE:-tests/fixtures/agent-session.json}"
 ITERATIONS="${BENCH_ITERATIONS:-3}"
-# 256 is not generous. With thinking active the model can spend an entire small
-# budget on reasoning_content and never reach the tool call — measured here at 200.
-# Raise this rather than lowering it if turns fail with finish=length.
-MAX_TOKENS="${BENCH_MAX_TOKENS:-768}"
 SEED="${BENCH_SEED:-0}"
 OUT_DIR="${BENCH_OUT_DIR:-bench}"
 LABEL="${BENCH_LABEL:-agent-current}"
@@ -91,6 +84,7 @@ command -v jq >/dev/null || { echo -e "${RED}jq is required${NC}" >&2; exit 1; }
 load_instance "$BENCH_INSTANCE" >/dev/null || {
     echo -e "${RED}no such instance: $BENCH_INSTANCE${NC}" >&2; exit 1; }
 PORT="$INST_PORT"
+MAX_TOKENS="${BENCH_MAX_TOKENS:-$((INST_REASONING_BUDGET + 512))}"
 test_ssh || { echo -e "${RED}cannot reach target${NC}" >&2; exit 1; }
 KEY=$(remote_conf_value "$INSTANCES_DIR/$BENCH_INSTANCE.conf" LLAMA_API_KEY)
 [[ -n "$KEY" ]] || { echo -e "${RED}could not read the API key for $BENCH_INSTANCE${NC}" >&2; exit 1; }
@@ -107,6 +101,7 @@ N_TURNS=$(jq -r '.turns | length' "$FIXTURE")
 declare -i n_turns=0 n_http_bad=0 n_stream_bad=0 n_toolcall_missing=0
 declare -i n_toolargs_bad=0 n_schema_bad=0 n_finish_bad=0 n_cold_not_cold=0
 declare -i n_warm_not_warm=0 n_reasoning_ate_budget=0 n_wrong_tool=0 n_unexpected_call=0
+declare -i n_no_answer=0 n_wrong_answer=0 n_wrong_args=0
 TTFT_MS=(); PROMPT_MS=(); GEN_TPS=(); HIT_RATIO=(); PROXY_MS=()
 
 # ── One streamed turn ─────────────────────────────────────────────────────────
@@ -125,7 +120,7 @@ stream_turn() {
     # costs no process per frame; `date` is spawned exactly once, on the frame
     # that matters. Role-only and empty-content frames are protocol noise, not an
     # answer arriving, so they are skipped.
-    SSE_T0=$(date +%s%3N)
+    SSE_T0=$(now_ms)
     remote_exec "curl -sN --max-time 300 -H 'Authorization: Bearer $KEY' \
         -H 'Content-Type: application/json' -d $(_shq "$body") \
         http://127.0.0.1:$PORT/v1/chat/completions" 2>/dev/null \
@@ -136,7 +131,7 @@ stream_turn() {
                 case "$line" in
                     *'"content":""'*) ;;   # empty delta, keep waiting
                     *'"content":"'*|*'"tool_calls"'*)
-                        got=1; date +%s%3N > "$tf" ;;
+                        got=1; now_ms > "$tf" ;;
                 esac
             fi
             printf '%s\n' "$line"
@@ -167,7 +162,7 @@ parse_turn() {
 #        warm  -> the fixture's exact prefix, so history accumulates and reuses
 run_session() {
     local phase="$1" iter="$2" nonce="" i turn body msgs expect
-    [[ "$phase" == "cold" ]] && nonce="[run $iter-$(date +%s%N)] "
+    [[ "$phase" == "cold" ]] && nonce="[run $iter-$EPOCHREALTIME] "
 
     # History starts as the system message and grows with RECORDED turns only.
     msgs=$(jq -nc --arg s "$nonce$SYSTEM" '[{role:"system",content:$s}]')
@@ -218,8 +213,12 @@ run_session() {
             schema)               n_schema_bad+=1 ;;
             wrong_tool)           n_wrong_tool+=1 ;;
             unexpected_call)      n_unexpected_call+=1 ;;
-            no_content)           n_stream_bad+=1 ;;
+            no_content)           n_no_answer+=1 ;;
+            wrong_answer)         n_wrong_answer+=1 ;;
+            wrong_args)           n_wrong_args+=1 ;;
             reasoning_ate_budget) n_reasoning_ate_budget+=1 ;;
+            ok) ;;
+            *) echo -e "${RED}unknown verdict $VERDICT${NC}" >&2; exit 1 ;;
         esac
         if [[ "$VERDICT" != ok ]]; then
             echo -e "${RED}FAIL $VERDICT${NC} $NOTE"
@@ -344,8 +343,11 @@ jq -n \
         --argjson warm "$n_warm_not_warm" \
         --argjson reason "$n_reasoning_ate_budget" \
         --argjson wrong "$n_wrong_tool" --argjson unexpected "$n_unexpected_call" \
+        --argjson noanswer "$n_no_answer" --argjson wronganswer "$n_wrong_answer" \
+        --argjson wrongargs "$n_wrong_args" \
         '{turns:$turns, httpErrors:$http, streamingBroken:$stream,
           toolCallMissing:$missing, wrongToolName:$wrong, unexpectedToolCall:$unexpected,
+          answerEmpty:$noanswer, answerWrong:$wronganswer, toolArgsWrong:$wrongargs,
           toolArgsInvalidJson:$args,
           toolArgsSchemaMismatch:$schema, finishReasonWrong:$finish,
           coldTurnWasCached:$cold, warmTurnNotCached:$warm,
