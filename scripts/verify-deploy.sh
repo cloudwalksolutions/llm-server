@@ -91,8 +91,8 @@ assert_streamed_tool_call() {
     fi
 }
 
-# Open WebUI on the llama.cpp provider sends earlier thinking back as
-# reasoning_content; the template must put it back inside <think>, across turns.
+# A client may send earlier thinking back as reasoning_content; the template must
+# put it back inside <think>, across turns.
 assert_replays_reasoning() {
     local port="$1" key="$2" body prompt
     body=$(jq -nc '{messages: [

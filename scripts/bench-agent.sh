@@ -359,9 +359,10 @@ jq -n \
         --arg tm "$(_stat med "${TTFT_MS[@]}")"   --arg tp "$(_stat p95 "${TTFT_MS[@]}")" \
         --arg pm "$(_stat med "${PROMPT_MS[@]}")" --arg gm "$(_stat med "${GEN_TPS[@]}")" \
         --arg hm "$(_stat med "${HIT_RATIO[@]}")" --arg xm "$(_stat med "${PROXY_MS[@]}")" \
-        '{ttftMsMedian:($tm|tonumber?), ttftMsP95:($tp|tonumber?),
-          serverPromptMsMedian:($pm|tonumber?), genTokensPerSecMedian:($gm|tonumber?),
-          warmCacheHitPctMedian:($hm|tonumber?), harnessOverheadMsMedian:($xm|tonumber?)}')" \
+        'def num: tonumber? // null;
+         {ttftMsMedian:($tm|num), ttftMsP95:($tp|num),
+          serverPromptMsMedian:($pm|num), genTokensPerSecMedian:($gm|num),
+          warmCacheHitPctMedian:($hm|num), harnessOverheadMsMedian:($xm|num)}')" \
   '{schema:1, label:$label, instance:$instance, fixture:$fixture,
     env:$env, correctness:$correctness, latency:$latency}' > "$RESULT"
 
