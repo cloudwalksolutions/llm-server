@@ -56,7 +56,7 @@ assert_eq() {
 
 # ── Per-instance observation ───────────────────────────────────────────────────
 check_instance() {
-    local name="$1" conf key props slots cmdline pid
+    local name="$1" conf key props slots cmdline
     load_instance "$name" >/dev/null || { fail "cannot load $name"; return; }
     conf="$INSTANCES_DIR/$name.conf"
     key=$(remote_conf_value "$conf" LLAMA_API_KEY)
@@ -65,10 +65,7 @@ check_instance() {
 
     props=$(remote_exec "curl -sf --max-time 15 -H 'Authorization: Bearer $key' http://127.0.0.1:$INST_PORT/props" 2>/dev/null || echo "")
     slots=$(remote_exec "curl -sf --max-time 15 -H 'Authorization: Bearer $key' http://127.0.0.1:$INST_PORT/slots" 2>/dev/null || echo "")
-    pid=$(remote_exec "systemctl show -p MainPID --value llama-server@$name" 2>/dev/null | tr -d '\r')
-    cmdline=""
-    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid != 0)) && \
-        cmdline=$(remote_exec "tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null" || echo "")
+    cmdline=$(live_cmdline "llama-server@$name")
 
     if [[ -z "$props" ]]; then
         fail "$name: /props unreachable, cannot observe anything"
@@ -118,9 +115,8 @@ check_instance() {
 
         # flash_attn is the one knob whose NAME lies. false does not pass
         # "-fa off", it passes nothing — so the observable consequence of
-        # flash_attn:false is the ABSENCE of -fa, and the resolved state has to
-        # come from the journal instead.
-        local has_fa resolved
+        # flash_attn:false is the ABSENCE of -fa, so llama.cpp resolves it itself.
+        local has_fa
         has_fa=$(grep -cE '(^|\s)-fa(\s|$)' <<<"$cmdline")
         if [[ "$INST_FLASH_ATTN" == "true" ]]; then
             ((has_fa > 0)) && pass "flash_attn:true -> -fa present" \
@@ -128,8 +124,7 @@ check_instance() {
         else
             ((has_fa == 0)) && pass "flash_attn:false -> -fa correctly absent" \
                             || fail "flash_attn:false but -fa is in argv"
-            resolved=$(remote_exec "journalctl -u llama-server@$name --no-pager 2>/dev/null | grep -oE 'Flash Attention was auto, set to [a-z]+' | tail -1" 2>/dev/null | grep -oE '[a-z]+$')
-            echo -e "       ${YELLOW}note${NC} llama.cpp resolved flash attention to '${resolved:-unknown}' anyway"
+            echo -e "       ${YELLOW}note${NC} flash attention: $(flash_attn_state "$cmdline")"
         fi
 
         # draft_model empty means speculative decoding off, i.e. no -md.

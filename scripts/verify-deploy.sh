@@ -155,13 +155,7 @@ for name in "${INSTANCE_NAMES[@]}"; do
     # match that pattern (the podman client and the containerized server) and
     # head -1 picked whichever had the lower PID. MainPID is the unit's own
     # process — the podman client — whose argv carries the full flag list.
-    pid=$(remote_exec "systemctl show -p MainPID --value $unit" 2>/dev/null | tr -d '\r')
-    if [[ ! "$pid" =~ ^[0-9]+$ ]] || ((pid == 0)); then
-        bad "no MainPID for $unit"
-        cmdline=""
-    else
-        cmdline=$(remote_exec "tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null" || echo "")
-    fi
+    cmdline=$(live_cmdline "$unit")
     if [[ -z "$cmdline" ]]; then
         bad "could not read the live cmdline"
     else

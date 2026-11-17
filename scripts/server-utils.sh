@@ -69,7 +69,7 @@ show_config() {
 # One instance's runtime picture, all of it read from the server rather than
 # inferred from config.
 _status_one() {
-    local name="$1" unit conf key port props slots metrics pid
+    local name="$1" unit conf key port props slots metrics
     unit=$(_unit_of "$name")
     conf=$(_conf_of "$name")
 
@@ -132,13 +132,7 @@ _status_one() {
         echo -e "  ${YELLOW}/metrics unreachable (is --metrics still in the unit?)${NC}"
     fi
 
-    # flash_attn: false does not mean flash attention is off — it only omits -fa,
-    # leaving llama.cpp on `auto`. The resolved value is a runtime decision and
-    # the journal is the only place it is stated, so surface it here instead of
-    # letting the config imply the wrong thing.
-    printf '  flash-at: %s\n' \
-        "$(remote_exec "journalctl -u $unit --no-pager 2>/dev/null | grep -oE 'Flash Attention was auto, set to [a-z]+' | tail -1" 2>/dev/null \
-            | sed 's/Flash Attention was auto, set to /auto -> /' || echo '?')"
+    printf '  flash-at: %s\n' "$(flash_attn_state "$(live_cmdline "$unit")")"
     echo ""
 }
 
