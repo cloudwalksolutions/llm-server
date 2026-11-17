@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Does a knob in config/llama.yaml actually change what the server serves?
 #
 # WHY THIS EXISTS
@@ -97,7 +97,7 @@ check_instance() {
     if [[ -z "$cmdline" ]]; then
         fail "$name: cannot read the live cmdline"
     else
-        _arg() { grep -oP "(?:^|\s)$1\s+\K[^ ]+" <<<"$cmdline" | head -1; }
+        _arg() { cmdline_arg "$1" "$cmdline"; }
         assert_eq "total context -> live -c"        "$(_arg -c)"  "$INST_TOTAL_CONTEXT"
         assert_eq "parallel_slots -> live -np"      "$(_arg -np)" "$INST_PARALLEL_SLOTS"
         assert_eq "batch_size -> live -b"           "$(_arg -b)"  "$INST_BATCH_SIZE"

@@ -7,6 +7,7 @@
 remote:
   host: 10.0.0.9
   user: youruser
+  jump: ""                    # optional ssh -J host, for a target you cannot reach directly
 
 runtime:
   engine: podman              # podman | docker — must match the target

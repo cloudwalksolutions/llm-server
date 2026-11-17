@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test the effective PER-REQUEST context window.
 # llama.cpp divides --ctx-size across --parallel slots unless --kv-unified,
 # so what a client gets is n_ctx_seq, not the configured total.

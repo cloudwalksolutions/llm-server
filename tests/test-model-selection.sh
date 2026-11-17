@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test that model selection works via API
 # Usage: ./tests/test-model-selection.sh [test-name]
 #   ONE TEST AT A TIME: ./tests/test-model-selection.sh test_api_lists_models
