@@ -146,7 +146,7 @@ test_effective_context_meets_floor() {
     jq -n --arg m "$MODEL" --rawfile c "$TMPDIR_TEST/overflow.txt" \
         '{model:$m, messages:[{role:"user",content:$c}], max_tokens:8}' \
         > "$TMPDIR_TEST/overflow.json"
-    echo "  probe: ~$((reps * 11)) tokens, $(stat -c%s "$TMPDIR_TEST/overflow.json") byte body"
+    echo "  probe: ~$((reps * 11)) tokens, $(wc -c < "$TMPDIR_TEST/overflow.json" | tr -d ' ') byte body"
 
     local result n_ctx
     post_json "$TMPDIR_TEST/overflow.json" 120
