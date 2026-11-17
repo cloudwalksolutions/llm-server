@@ -24,6 +24,12 @@ judge_turn() {
             VERDICT=unexpected_call; NOTE="called $(jq -r 'map(.name) | join(",")' <<<"$R_CALLS")"
         elif [[ -z "$R_CONTENT" ]]; then
             VERDICT=no_content; NOTE="finish=$R_FINISH"
+        elif missing=$(jq -r --arg c "$R_CONTENT" '
+                def norm: ascii_downcase | gsub("\\s+"; " ");
+                ($c | norm) as $got
+                | [.expect_contains[]? | select(norm as $w | $got | contains($w) | not)] | join(", ")' <<<"$turn") \
+             && [[ -n "$missing" ]]; then
+            VERDICT=wrong_answer; NOTE="missing: $missing"
         else
             VERDICT=ok; NOTE="${#R_CONTENT} chars"
         fi
@@ -50,6 +56,12 @@ judge_turn() {
     done < <(jq -r '.required_args[]?' <<<"$turn")
     if [[ -n "$missing" ]]; then
         VERDICT=schema; NOTE="args missing:$missing"
+        return
+    fi
+    if jq -e '.args_match' <<<"$turn" >/dev/null \
+        && ! jq -e --argjson want "$(jq -c '.args_match' <<<"$turn")" \
+            'any(.args | fromjson as $got | $want | to_entries | all(.value == $got[.key]))' <<<"$R_CALLS" >/dev/null; then
+        VERDICT=wrong_args; NOTE="want $(jq -c '.args_match' <<<"$turn"), got $(jq -c 'map(.args)' <<<"$R_CALLS")"
         return
     fi
     VERDICT=ok; NOTE="$(jq -c 'map("\(.name) \(.args)")' <<<"$R_CALLS")"

@@ -51,6 +51,26 @@ expect_verdict "a tool call on a turn that needed an answer is unexpected" unexp
 expect_verdict "an answer on an answer turn passes" ok "$answer" \
     < <(content "Here is the summary."; finish stop)
 
+recall='{"expect":"content","expect_contains":["ACME-4821","Port 5432"]}'
+
+expect_verdict "an answer missing an expected fact is a wrong answer" wrong_answer "$recall" \
+    < <(content "The ticket is ACME-4821."; finish stop)
+
+expect_verdict "expected facts match regardless of case and spacing" ok "$recall" \
+    < <(content "acme-4821 is blocked on port
+5432."; finish stop)
+
+ticket='{"expect":"tool_call","tools":["get_users","jira_get_issue"],"args_match":{"key":"ACME-4821"}}'
+
+expect_verdict "a call with the wrong argument value is wrong args" wrong_args "$ticket" \
+    < <(call 0 jira_get_issue '{"key":"ACME-4812"}'; finish tool_calls)
+
+expect_verdict "an argument that merely contains the expected value is wrong args" wrong_args "$ticket" \
+    < <(call 0 jira_get_issue '{"key":"ACME-48210"}'; finish tool_calls)
+
+expect_verdict "the matching call may come after another" ok "$ticket" \
+    < <(call 0 get_users '{"q":"a"}'; call 1 jira_get_issue '{"key":"ACME-4821","fields":"status"}'; finish tool_calls)
+
 echo ""
 echo "$PASSED passed, $FAILED failed"
 ((FAILED == 0))

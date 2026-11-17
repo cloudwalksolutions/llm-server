@@ -45,19 +45,17 @@ fi
 # is a property of the server; edge availability is a separate concern.
 ENDPOINT="${LLM_ENDPOINT:-https://$HOST}"
 API_KEY="${LLAMA_API_KEY:-}"
-MODEL="${LLM_MODEL:-qwen3-14b}"
+MODEL="${LLM_MODEL:-${ROUTER_DEFAULT:-}}"
 
 # The floor is what THIS instance is configured to serve, read from
-# config/llama.yaml — not a fixed number. A hardcoded 16384 made the suite fail
-# against a perfectly correct config for every instance sized differently
-# (qwen3-8b serves 4096, qwen3-14b-1m serves 40960).
-# An explicit MIN_CONTEXT still wins, and 16384 is the fallback when there is no
-# local config to read.
+# config/llama.yaml — not a fixed number. An explicit MIN_CONTEXT still wins,
+# and 16384 is the fallback only when there is no local config to read.
 if [[ -z "${MIN_CONTEXT:-}" ]] && ((_HAVE_CONFIG)); then
     if load_instance "$MODEL" >/dev/null 2>&1; then
         MIN_CONTEXT="$INST_CONTEXT_PER_REQUEST"
     else
-        echo -e "${YELLOW}note:${NC} '$MODEL' is not an instance in $CONFIG_FILE; using the default floor" >&2
+        echo -e "${RED}FAIL${NC}: '$MODEL' is not an instance in $CONFIG_FILE, so there is no window to assert" >&2
+        exit 1
     fi
 fi
 MIN_CONTEXT="${MIN_CONTEXT:-16384}"

@@ -339,6 +339,11 @@ cmdline_arg() {
     awk -v flag="$1" '{ for (i = 1; i < NF; i++) if ($i == flag) { print $(i + 1); exit } }' <<<"$2"
 }
 
+now_ms() {
+    local us="${EPOCHREALTIME/[.,]/}"
+    echo $((us / 1000))
+}
+
 live_cmdline() {
     local pid
     pid=$(remote_exec "systemctl show -p MainPID --value $1" 2>/dev/null | tr -d '\r')

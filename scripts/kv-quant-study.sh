@@ -67,7 +67,7 @@ load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
 
 # The instance whose model and API key we borrow. Any instance serving the model
 # under test will do; we only read from it.
-STUDY_INSTANCE="${STUDY_INSTANCE:-qwen3-14b}"
+STUDY_INSTANCE="${STUDY_INSTANCE:-$ROUTER_DEFAULT}"
 STUDY_DIR="${STUDY_DIR:-/opt/llm/kv-study}"
 STUDY_CTX="${STUDY_CTX:-8192}"
 STUDY_CHUNKS="${STUDY_CHUNKS:-16}"

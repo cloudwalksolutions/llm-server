@@ -466,6 +466,17 @@ test_sudo_gets_the_password_over_key_auth() {
     fi
 }
 
+test_now_ms_is_epoch_milliseconds() {
+    echo "TEST: now_ms is whole epoch milliseconds, on any platform's date"
+    local a b
+    a=$(now_ms); b=$(now_ms)
+    if [[ "$a" =~ ^[0-9]{13}$ ]] && ((b >= a)) && ((a / 1000 - $(date +%s) <= 1)); then
+        pass "now_ms=$a"
+    else
+        fail "now_ms gave '$a' then '$b'"
+    fi
+}
+
 test_cmdline_arg_reads_the_value_after_its_exact_flag() {
     echo "TEST: a live cmdline yields each flag's own value, never a longer flag's"
     local cmdline="llama-server --alias m -ctk q8_0 --cache-ram 1024 -c 262144 -np 2 -c 9"
@@ -725,6 +736,7 @@ else
              test_flash_attention_is_read_from_what_the_process_runs_with \
              test_refuses_a_target_address_in_the_config \
              test_cmdline_arg_reads_the_value_after_its_exact_flag \
+             test_now_ms_is_epoch_milliseconds \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
              test_unit_drafts_with_the_current_speculative_flags \
