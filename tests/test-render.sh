@@ -492,6 +492,19 @@ ssh_target_from_env() {
     rm -rf "$dir"
 }
 
+test_flash_attention_is_read_from_what_the_process_runs_with() {
+    echo "TEST: flash attention is stated from the live argv, which a running quantized V cache proves"
+    local explicit quantized unknown
+    explicit=$(flash_attn_state "llama-server -fa off --cache-type-v f16")
+    quantized=$(flash_attn_state "llama-server --cache-type-k q8_0 --cache-type-v q8_0")
+    unknown=$(flash_attn_state "llama-server --cache-type-v f16")
+    if [[ "$explicit" == off* && "$quantized" == enabled* && "$unknown" == auto* ]]; then
+        pass "explicit, proven by the V cache, or honestly unresolved"
+    else
+        fail "explicit='$explicit' quantized='$quantized' unknown='$unknown'"
+    fi
+}
+
 test_ssh_target_and_jump_come_from_env() {
     echo "TEST: the SSH target and its jump host come from .env, the jump only when set"
     local jumped direct
@@ -709,6 +722,7 @@ else
              test_agent_gate_fails_a_run_that_stopped_early \
              test_sudo_gets_the_password_over_key_auth \
              test_ssh_target_and_jump_come_from_env \
+             test_flash_attention_is_read_from_what_the_process_runs_with \
              test_refuses_a_target_address_in_the_config \
              test_cmdline_arg_reads_the_value_after_its_exact_flag \
              test_unit_loads_models_without_mmap_by_its_current_name \
