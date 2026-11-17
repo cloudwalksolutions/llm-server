@@ -121,8 +121,8 @@ stream_turn() {
     # that matters. Role-only and empty-content frames are protocol noise, not an
     # answer arriving, so they are skipped.
     SSE_T0=$(now_ms)
-    remote_exec "curl -sN --max-time 300 -H 'Authorization: Bearer $KEY' \
-        -H 'Content-Type: application/json' -d $(_shq "$body") \
+    printf '%s' "$body" | remote_exec "curl -sN --max-time 300 -H 'Authorization: Bearer $KEY' \
+        -H 'Content-Type: application/json' --data-binary @- \
         http://127.0.0.1:$PORT/v1/chat/completions" 2>/dev/null \
     | {
         local line got=""
@@ -199,6 +199,9 @@ run_session() {
         # --- correctness ---
         if [[ -n "$R_ERROR" ]]; then
             n_http_bad+=1; echo -e "${RED}error${NC} $R_ERROR"; continue
+        fi
+        if ((SSE_FRAMES == 0)); then
+            n_http_bad+=1; echo -e "${RED}no response${NC}"; continue
         fi
         if ((SSE_FRAMES < 2)); then
             n_stream_bad+=1
