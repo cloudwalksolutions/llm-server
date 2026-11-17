@@ -50,10 +50,13 @@ Create `.env` (gitignored):
 LLM_HOST='llm.example.com'        # public endpoint, used by the test targets
 LLAMA_API_KEY='<64-char key>'     # must match the key on the target
 SSH_PASS='...'                    # or SSH_KEY='~/.ssh/id_ed25519'
+LLM_SSH_HOST='10.0.0.9'           # the target, for deploy and the SSH-based targets
+LLM_SSH_USER='youruser'
+LLM_SSH_JUMP=''                   # optional ssh -J host, when the target is not directly reachable
 ```
 
-Then `make setup` to create `config/llama.yaml` from the example, and point
-`remote.host` / `remote.user` at your target.
+Then `make setup` to create `config/llama.yaml` from the example. The target's address
+lives only in `.env`; a `remote:` block in the config is refused.
 
 ## Configuration
 

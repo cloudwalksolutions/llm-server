@@ -91,9 +91,6 @@ load_config() {
         return 1
     fi
 
-    REMOTE_HOST=$(yq '.remote.host' "$CONFIG_FILE")
-    REMOTE_USER=$(yq '.remote.user' "$CONFIG_FILE")
-    REMOTE_JUMP=$(yq '.remote.jump // ""' "$CONFIG_FILE")
     RUNTIME_ENGINE=$(yq '.runtime.engine' "$CONFIG_FILE")
     RUNTIME_GPU=$(yq '.runtime.gpu' "$CONFIG_FILE")
     INSTANCES_DIR=$(yq '.runtime.instances_dir // "/opt/llm/instances"' "$CONFIG_FILE")
@@ -113,6 +110,12 @@ load_config() {
     RES_LIMIT_MEMLOCK=$(yq '.resources.limit_memlock // "infinity"' "$CONFIG_FILE")
     _require_int "resources.limit_nofile" "$RES_LIMIT_NOFILE" || return 1
     _require_no_control_chars "resources.limit_memlock" "$RES_LIMIT_MEMLOCK" || return 1
+
+    if [[ "$(yq '.remote' "$CONFIG_FILE")" != "null" ]]; then
+        _cfg_err "remote: belongs in .env, not in $CONFIG_FILE"
+        echo "  Set LLM_SSH_HOST, LLM_SSH_USER and optionally LLM_SSH_JUMP there; this repo is public." >&2
+        return 1
+    fi
 
     # The old schema was a single flat llama: block. Refuse to guess.
     if [[ "$(yq '.instances' "$CONFIG_FILE")" == "null" ]]; then
@@ -160,6 +163,9 @@ load_config() {
         # shellcheck disable=SC1091
         source .env
     fi
+    REMOTE_HOST="${LLM_SSH_HOST:-}"
+    REMOTE_USER="${LLM_SSH_USER:-}"
+    REMOTE_JUMP="${LLM_SSH_JUMP:-}"
 
     # Not fatal: offline work (rendering, validation) needs no credentials.
     if _is_local_host; then

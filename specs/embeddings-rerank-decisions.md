@@ -53,9 +53,8 @@ Rejected options, and why:
 
 ## 3. Current state of the target (read over SSH on 2026-10-03, read-only)
 
-Access: `remote.host` / `remote.user` were `192.168.1.168` / `walkerobrien` in git
-history (`git log -p -S'host:' -- config/`). `.env` has `LLM_HOST`, `LLAMA_API_KEY`,
-`SSH_PASS`. The local `config/llama.yaml` **does not exist** (gitignored). Rebuild it
+Access: the SSH target is `LLM_SSH_HOST` / `LLM_SSH_USER` (and `LLM_SSH_JUMP`) in `.env`,
+beside `LLM_HOST`, `LLAMA_API_KEY` and `SSH_PASS`. The local `config/llama.yaml` **does not exist** (gitignored). Rebuild it
 from the live confs below, with `make setup` and the example file as the schema.
 `yq` v4.54.1 was installed locally via brew.
 
@@ -109,7 +108,7 @@ Models in `/opt/llm/models`:
   ```json
   {"qwen3-14b-1m":"127.0.0.1:8081","qwen3-14b":"127.0.0.1:8082","qwen3-8b":"127.0.0.1:8083","_default":"127.0.0.1:8081"}
   ```
-  Owned by `walkerobrien`; the nginx conf is owned by root.
+  Owned by the SSH user; the nginx conf is owned by root.
 - `/etc/llama-router/api-key` exists (root 600).
 
 ## 4. Repo facts the change touches

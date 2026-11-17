@@ -1,8 +1,4 @@
 # Fixture for golden render tests. Fixed values — do not tune.
-remote:
-  host: 10.0.0.10
-  user: testuser
-
 runtime:
   engine: docker
   gpu: nvidia

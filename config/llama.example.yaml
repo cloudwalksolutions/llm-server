@@ -3,11 +3,8 @@
 # Every value below is also validated by scripts/lib/common.sh; run
 # `make test-unit` after changing the schema.
 
-# Where to deploy. Auth comes from .env (SSH_KEY or SSH_PASS).
-remote:
-  host: 10.0.0.9
-  user: youruser
-  jump: ""                    # optional ssh -J host, for a target you cannot reach directly
+# Where to deploy is not here: LLM_SSH_HOST, LLM_SSH_USER, optional LLM_SSH_JUMP
+# and SSH_KEY or SSH_PASS come from .env, because this repo is public.
 
 runtime:
   engine: podman              # podman | docker — must match the target
