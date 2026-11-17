@@ -93,6 +93,7 @@ load_config() {
 
     REMOTE_HOST=$(yq '.remote.host' "$CONFIG_FILE")
     REMOTE_USER=$(yq '.remote.user' "$CONFIG_FILE")
+    REMOTE_JUMP=$(yq '.remote.jump // ""' "$CONFIG_FILE")
     RUNTIME_ENGINE=$(yq '.runtime.engine' "$CONFIG_FILE")
     RUNTIME_GPU=$(yq '.runtime.gpu' "$CONFIG_FILE")
     INSTANCES_DIR=$(yq '.runtime.instances_dir // "/opt/llm/instances"' "$CONFIG_FILE")
@@ -172,7 +173,7 @@ load_config() {
         SSH_AUTH="none"
     fi
 
-    export REMOTE_HOST REMOTE_USER SSH_AUTH SSH_KEY SSH_PASS
+    export REMOTE_HOST REMOTE_USER REMOTE_JUMP SSH_AUTH SSH_KEY SSH_PASS
     export RUNTIME_ENGINE RUNTIME_GPU INSTANCES_DIR ROUTER_MAP CONFIG_FILE
     export MODELS_DIR UNIT_PATH RES_LIMIT_NOFILE RES_LIMIT_MEMLOCK
 }
@@ -328,12 +329,19 @@ _is_local_host() {
     hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx "$REMOTE_HOST"
 }
 
+cmdline_arg() {
+    awk -v flag="$1" '{ for (i = 1; i < NF; i++) if ($i == flag) { print $(i + 1); exit } }' <<<"$2"
+}
+
 # SSH command as an argv array, so nothing goes through eval
 _ssh_argv() {
     if [[ "$SSH_AUTH" == "key" ]]; then
         printf '%s\0' ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no
     else
         printf '%s\0' sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no
+    fi
+    if [[ -n "${REMOTE_JUMP:-}" ]]; then
+        printf '%s\0' -J "$REMOTE_JUMP"
     fi
 }
 

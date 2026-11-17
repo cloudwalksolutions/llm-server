@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test LLM server from anywhere (pass hostname as arg, env var, or get prompted)
 # Usage: ./test-remote.sh [hostname] [api-key]
 #   or:  LLM_HOST=llm.example.com LLAMA_API_KEY=xxx ./test-remote.sh

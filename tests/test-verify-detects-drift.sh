@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Does `make verify` actually FAIL when the target disagrees with the config?
 #
 # verify-deploy.sh is the thing standing between a drifted target and a green
@@ -42,7 +42,7 @@ load_config "$REAL_CONFIG" >/dev/null 2>&1 || {
     echo -e "${RED}cannot load $REAL_CONFIG${NC}" >&2; exit 1; }
 test_ssh || { echo -e "${RED}cannot reach the target${NC}" >&2; exit 1; }
 
-BASE=$(mktemp --suffix=.yaml)
+BASE=$(mktemp)
 trap 'rm -f "$BASE" "${MUT:-}"' EXIT
 # Keep only the instance under test, so verify does not spend a tool call on
 # instances this suite is not asserting about.
@@ -71,7 +71,7 @@ test_verify_passes_when_config_matches_target() {
 # deploy, or a deploy half-applied.
 expect_drift_detected() {
     local label="$1" expr="$2" want_signal="$3"
-    MUT=$(mktemp --suffix=.yaml)
+    MUT=$(mktemp)
     yq "$expr" "$BASE" > "$MUT"
 
     if run_verify "$MUT"; then

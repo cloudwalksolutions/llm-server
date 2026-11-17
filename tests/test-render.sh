@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Offline tests: config validation, defaults/override merging, derived context
 # arithmetic, and golden renders of the per-instance conf files.
 #
@@ -33,7 +33,7 @@ render() { LLAMA_CONFIG="$FIXTURES/$1.yaml" "$DEPLOY" --render "$2" 2>&1; }
 # Load a fixture into the current shell so INST_* can be inspected directly
 use_fixture() { load_config "$FIXTURES/$1.yaml" >/dev/null 2>&1; }
 
-conf_val() { grep -oP "^$2=\K.*" <<<"$1"; }
+conf_val() { sed -n "s/^$2=//p" <<<"$1"; }
 
 # ── Golden renders ────────────────────────────────────────────────────────────
 check_golden() {
@@ -112,7 +112,7 @@ test_derivation_round_trips() {
 test_refuses_a_window_it_cannot_deliver() {
     echo "TEST: deploy refuses a context that cannot survive PAD256"
     local cfg out rc
-    cfg=$(mktemp --suffix=.yaml)
+    cfg=$(mktemp)
     yq '.instances.base.context_per_request = 16000' "$FIXTURES/amd.yaml" > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --check 2>&1)
     rc=$?
@@ -206,7 +206,7 @@ test_api_key_is_preserved_not_generated() {
 # ── Validation ────────────────────────────────────────────────────────────────
 expect_reject() {
     local label="$1" expr="$2" out rc cfg
-    cfg=$(mktemp --suffix=.yaml)
+    cfg=$(mktemp)
     yq "$expr" "$FIXTURES/amd.yaml" > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
     rc=$?
@@ -273,7 +273,7 @@ LLAMA_API_KEY="'
 test_accepts_zero_where_llama_cpp_means_disabled() {
     echo "TEST: cache_reuse:0 and draft_max:0 are legal, not errors"
     local cfg out rc
-    cfg=$(mktemp --suffix=.yaml)
+    cfg=$(mktemp)
     yq '.defaults.cache_reuse = 0 | .defaults.draft_max = 0' "$FIXTURES/amd.yaml" > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
     rc=$?
@@ -299,7 +299,7 @@ test_still_rejects_non_integers_where_zero_is_allowed() {
 test_warns_quantized_kv_with_flash_attn_false() {
     echo "TEST: quantized V + flash_attn:false warns but still renders"
     local cfg out rc
-    cfg=$(mktemp --suffix=.yaml)
+    cfg=$(mktemp)
     yq '.instances.base.flash_attn = false' "$FIXTURES/amd.yaml" > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
     rc=$?
@@ -466,6 +466,32 @@ test_sudo_gets_the_password_over_key_auth() {
     fi
 }
 
+test_cmdline_arg_reads_the_value_after_its_exact_flag() {
+    echo "TEST: a live cmdline yields each flag's own value, never a longer flag's"
+    local cmdline="llama-server --alias m -ctk q8_0 --cache-ram 1024 -c 262144 -np 2 -c 9"
+    local got="$(cmdline_arg -c "$cmdline")/$(cmdline_arg -np "$cmdline")/$(cmdline_arg --cache-ram "$cmdline")/$(cmdline_arg -fa "$cmdline")"
+    if [[ "$got" == "262144/2/1024/" ]]; then
+        pass "first value of each exact flag, empty when absent"
+    else
+        fail "got $got"
+    fi
+}
+
+test_ssh_hops_through_the_configured_jump() {
+    echo "TEST: remote.jump puts the bastion in front of every SSH connection, and only then"
+    local jumped direct cfg
+    cfg=$(mktemp)
+    yq '.remote.jump = "admin@192.168.10.12"' "$FIXTURES/amd.yaml" > "$cfg"
+    jumped=$(load_config "$cfg" >/dev/null 2>&1; SSH_AUTH=key SSH_KEY=k; _ssh_argv | tr '\0' ' ')
+    direct=$(use_fixture amd; SSH_AUTH=key SSH_KEY=k; _ssh_argv | tr '\0' ' ')
+    rm -f "$cfg"
+    if [[ "$jumped" == *"-J admin@192.168.10.12 "* && "$direct" != *"-J"* ]]; then
+        pass "jump only when configured"
+    else
+        fail "with jump: '$jumped'; without: '$direct'"
+    fi
+}
+
 # ── Unit template ─────────────────────────────────────────────────────────────
 render_unit() { LLAMA_CONFIG="$FIXTURES/$1.yaml" "$DEPLOY" --render unit 2>&1; }
 
@@ -549,7 +575,7 @@ test_router_has_a_backend_for_every_instance() {
     echo "TEST: the nginx router has one named backend per instance port, and no other"
     local conf ports
     conf=$(LLAMA_CONFIG="$FIXTURES/amd.yaml" "$DEPLOY" --render router 2>&1)
-    ports=$(grep -oP 'location @backend_127_0_0_1_\K[0-9]+' <<<"$conf" | sort | tr '\n' ' ')
+    ports=$(sed -nE 's/.*location @backend_127_0_0_1_([0-9]+).*/\1/p' <<<"$conf" | sort | tr '\n' ' ')
     [[ "$ports" == "8082 8083 " ]] || { fail "backends for ports [$ports], want [8082 8083 ]"; return; }
     grep -q 'proxy_pass http://127.0.0.1:8083;' <<<"$conf" || { fail "8083 backend does not proxy to 8083"; return; }
     grep -q 'js_content llama_router.routeRequest;' <<<"$conf" || { fail "router lost its njs routing"; return; }
@@ -559,7 +585,7 @@ test_router_has_a_backend_for_every_instance() {
 test_unit_carries_resource_limits() {
     echo "TEST: resources: reaches the unit's Limit* directives"
     local cfg out
-    cfg=$(mktemp --suffix=.yaml)
+    cfg=$(mktemp)
     yq '.resources.limit_nofile = 4242 | .resources.limit_memlock = "unlimited"' \
         "$FIXTURES/amd.yaml" > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render unit 2>&1)
@@ -590,7 +616,7 @@ test_unit_leaves_per_instance_values_to_systemd() {
 test_rejects_flat_legacy_schema() {
     echo "TEST: the old single-instance schema fails with a clear message"
     local cfg out rc
-    cfg=$(mktemp --suffix=.yaml)
+    cfg=$(mktemp)
     printf 'remote: {host: h, user: u}\nruntime: {engine: podman, gpu: amd}\nllama: {context_size: 32768, parallel_slots: 8}\n' > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
     rc=$?
@@ -655,6 +681,8 @@ else
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \
              test_sudo_gets_the_password_over_key_auth \
+             test_ssh_hops_through_the_configured_jump \
+             test_cmdline_arg_reads_the_value_after_its_exact_flag \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
              test_unit_drafts_with_the_current_speculative_flags \

@@ -107,7 +107,7 @@ assert_replays_reasoning() {
         -H 'Content-Type: application/json' -d $(_shq "$body") \
         http://127.0.0.1:$port/apply-template" 2>/dev/null | jq -r '.prompt // empty' 2>/dev/null)
     for m in replay-marker-tool replay-marker-answer; do
-        if grep -Pzq "<think>\\s*$m\\s*</think>" <<<"$prompt"; then
+        if tr -s '[:space:]' ' ' <<<"$prompt" | grep -Eq "<think> ?$m ?</think>"; then
             ok "earlier thinking replayed: $m"
         else
             bad "earlier thinking not replayed inside <think>: $m"
@@ -165,10 +165,10 @@ for name in "${INSTANCE_NAMES[@]}"; do
     if [[ -z "$cmdline" ]]; then
         bad "could not read the live cmdline"
     else
-        assert_eq "live -c"  "$(grep -oP '(?:^|\s)-c\s+\K[0-9]+' <<<"$cmdline" | head -1)"  "$INST_TOTAL_CONTEXT"
-        assert_eq "live -np" "$(grep -oP '(?:^|\s)-np\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_PARALLEL_SLOTS"
-        assert_eq "live --reasoning-budget" "$(grep -oP '(?:^|\s)--reasoning-budget\s+\K[0-9]+' <<<"$cmdline" | head -1)" "$INST_REASONING_BUDGET"
-        assert_eq "live --cache-ram MiB" "$(grep -oP '(?:^|\s)--cache-ram\s+\K[0-9]+' <<<"$cmdline" | head -1)" "${INST_CACHE_RAM:-unset}"
+        assert_eq "live -c"  "$(cmdline_arg -c "$cmdline")"  "$INST_TOTAL_CONTEXT"
+        assert_eq "live -np" "$(cmdline_arg -np "$cmdline")" "$INST_PARALLEL_SLOTS"
+        assert_eq "live --reasoning-budget" "$(cmdline_arg --reasoning-budget "$cmdline")" "$INST_REASONING_BUDGET"
+        assert_eq "live --cache-ram MiB" "$(cmdline_arg --cache-ram "$cmdline")" "${INST_CACHE_RAM:-unset}"
         if grep -qF -- "--reasoning-budget-message $INST_REASONING_BUDGET_MESSAGE" <<<"$cmdline"; then
             ok "live --reasoning-budget-message"
         else
