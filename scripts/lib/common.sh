@@ -480,7 +480,7 @@ agent_gate() {
     fi
     turns=$(jq -r '.correctness.turns // 0' "$result" 2>/dev/null)
     turns=${turns:-0}
-    if ((turns != planned)); then
+    if ((turns != planned || planned == 0)); then
         echo -e "${RED}FAIL${NC} $turns of $planned turns ran"
         return 1
     fi

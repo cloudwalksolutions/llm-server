@@ -447,6 +447,12 @@ test_agent_gate_fails_a_run_that_stopped_early() {
     else
         fail "a complete clean run failed"
     fi
+    echo '{"correctness":{"turns":0,"httpErrors":0}}' > "$result"
+    if agent_gate "$result" 0 >/dev/null; then
+        fail "a run of zero turns passed"
+    else
+        pass "a run that tested nothing fails"
+    fi
     rm -f "$result"
 }
 
@@ -464,6 +470,25 @@ test_sudo_gets_the_password_over_key_auth() {
     else
         fail "key auth ran: $sent"
     fi
+}
+
+test_long_session_hides_each_fact_at_its_depth() {
+    echo "TEST: the long session hides each planted fact at its depth, and asks for exactly it"
+    local out haystack placed
+    out=$(mktemp)
+    tests/fixtures/make-long-session.sh 20000 "$out" >/dev/null 2>&1 || { fail "generator failed"; rm -f "$out"; return; }
+    haystack=$(jq -r '[.turns[].replay_tool.content // empty] | join("")' "$out")
+    placed=$(jq -r --arg h "$haystack" '
+        [.turns[] | select(.depth_pct) | .fact as $fact
+         | (($h | index($fact)) / ($h | length) * 100 | round) as $at
+         | select(($at - .depth_pct | fabs) <= 2 and all(.expect_contains[]; inside($fact)))]
+        | length' "$out")
+    if [[ "$placed" == 3 ]] && (( ${#haystack} > 20000 * 5 / 2 )); then
+        pass "3 facts at 10/50/90% of ${#haystack} chars"
+    else
+        fail "placed=$placed haystack=${#haystack} chars"
+    fi
+    rm -f "$out"
 }
 
 test_now_ms_is_epoch_milliseconds() {
@@ -737,6 +762,7 @@ else
              test_refuses_a_target_address_in_the_config \
              test_cmdline_arg_reads_the_value_after_its_exact_flag \
              test_now_ms_is_epoch_milliseconds \
+             test_long_session_hides_each_fact_at_its_depth \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
              test_unit_drafts_with_the_current_speculative_flags \
