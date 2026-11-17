@@ -36,10 +36,10 @@
 #   symmetric study is roughly 45 min of wall clock, most of it disk rather than
 #   GPU. `--plan` prints the current numbers.
 #
-# It does NOT need a maintenance window. The study needs ~11 GiB and the target
-# has ~56 GiB of VRAM free with all three instances running. Quality numbers are
-# deterministic and unaffected by concurrent traffic. Only --bench needs a quiet
-# machine, because it measures time.
+# It loads its own copy of the model, so it needs the model's size free in GTT;
+# --plan says whether that fits, and a run refuses when it does not. Quality
+# numbers are deterministic and unaffected by concurrent traffic. Only --bench
+# needs a quiet machine, because it measures time.
 #
 # Usage:
 #   ./scripts/kv-quant-study.sh --plan       budget + free space, changes nothing
@@ -468,6 +468,18 @@ write_report() {
 }
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
+gpu_free_gib() {
+    remote_exec "cat /sys/class/drm/card*/device/mem_info_gtt_total /sys/class/drm/card*/device/mem_info_gtt_used 2>/dev/null" \
+        | awk 'NR==1{t=$1} NR==2{u=$1} END{printf "%d", (t-u)/1073741824}'
+}
+
+model_gib() {
+    remote_exec "stat -c %s $MODELS_DIR/$MODEL_FILE" | awk '{printf "%d", $1/1073741824 + 1}'
+}
+
+# The model, its KV at this context, and room for compute buffers.
+study_need_gib() { echo $(( $(model_gib) + 6 )); }
+
 show_plan() {
     echo -e "${BLUE}KV quantization study — plan${NC}\n"
     echo -e "${YELLOW}what runs${NC}"
@@ -478,16 +490,20 @@ show_plan() {
     echo -e "${YELLOW}cost${NC}"
     echo "  disk:  ~$KLD_GIB GiB per corpus of KLD reference logits, ~$((KLD_GIB * ${#CORPORA[@]})) GiB total"
     echo "  time:  ~$(( TOKENS * ${#CORPORA[@]} * ${#ARMS[@]} / 790 / 60 )) min of GPU at the ~790 tok/s measured here"
-    echo "  VRAM:  ~11 GiB (9 GiB model + f16 KV at this context)"
+    local need free
+    need=$(study_need_gib); free=$(gpu_free_gib)
+    echo "  GPU:   ~$need GiB (the model, its KV at this context, compute buffers)"
     echo ""
     echo -e "${YELLOW}target headroom${NC}"
     remote_exec "df -h --output=avail $STUDY_DIR 2>/dev/null | tail -1 | xargs echo '  disk free:'" || \
         remote_exec "df -h --output=avail /opt 2>/dev/null | tail -1 | xargs echo '  disk free (/opt):'"
-    remote_exec "awk '{printf \"  VRAM free: %d MiB of %d MiB\n\", (98304*1048576-\$1)/1048576, 98304}' /sys/class/drm/card0/device/mem_info_vram_used" 2>/dev/null || true
+    echo "  GTT free: $free GiB"
     echo ""
-    echo "No instance is stopped and nothing is deployed. Quality numbers are"
-    echo "deterministic, so concurrent traffic does not affect them — only --bench"
-    echo "needs a quiet machine."
+    if ((free >= need)); then
+        echo -e "${GREEN}fits${NC} beside the running instances."
+    else
+        echo -e "${RED}does not fit${NC}: stop instances to free $((need - free)) GiB more of GTT first."
+    fi
     corpus_stats
 }
 
@@ -521,6 +537,11 @@ case "$MODE" in
     run)
         test_ssh || { echo -e "${RED}cannot reach target${NC}" >&2; exit 1; }
         echo -e "${BLUE}KV quantization study${NC} — $MODEL_FILE on $REMOTE_HOST\n"
+        need=$(study_need_gib); free=$(gpu_free_gib)
+        if ((free < need)); then
+            echo -e "${RED}refusing${NC}: needs ~$need GiB of GTT, $free GiB free. Stop instances first (--plan)." >&2
+            exit 1
+        fi
 
         # Reuse a corpus only if it is big enough to fill --chunks. Testing mere
         # existence would silently reuse a short file, and llama-perplexity
