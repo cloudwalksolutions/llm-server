@@ -1,8 +1,4 @@
 # Fixture for golden render tests. Fixed values — do not tune.
-remote:
-  host: 10.0.0.9
-  user: testuser
-
 runtime:
   engine: podman
   gpu: amd

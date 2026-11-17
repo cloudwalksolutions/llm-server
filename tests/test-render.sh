@@ -477,16 +477,28 @@ test_cmdline_arg_reads_the_value_after_its_exact_flag() {
     fi
 }
 
-test_ssh_hops_through_the_configured_jump() {
-    echo "TEST: remote.jump puts the bastion in front of every SSH connection, and only then"
-    local jumped direct cfg
-    cfg=$(mktemp)
-    yq '.remote.jump = "admin@192.168.10.12"' "$FIXTURES/amd.yaml" > "$cfg"
-    jumped=$(load_config "$cfg" >/dev/null 2>&1; SSH_AUTH=key SSH_KEY=k; _ssh_argv | tr '\0' ' ')
-    direct=$(use_fixture amd; SSH_AUTH=key SSH_KEY=k; _ssh_argv | tr '\0' ' ')
-    rm -f "$cfg"
-    if [[ "$jumped" == *"-J admin@192.168.10.12 "* && "$direct" != *"-J"* ]]; then
-        pass "jump only when configured"
+# Prints "<user>@<host> <ssh argv>" as load_config resolves them from a .env holding only "$@".
+ssh_target_from_env() {
+    local dir config="$PWD/$FIXTURES/amd.yaml"
+    dir=$(mktemp -d)
+    printf '%s\n' "$@" > "$dir/.env"
+    (
+        unset LLM_SSH_HOST LLM_SSH_USER LLM_SSH_JUMP
+        cd "$dir" && load_config "$config" >/dev/null 2>&1
+        SSH_AUTH=key SSH_KEY=k
+        printf '%s@%s ' "$REMOTE_USER" "$REMOTE_HOST"
+        _ssh_argv | tr '\0' ' '
+    )
+    rm -rf "$dir"
+}
+
+test_ssh_target_and_jump_come_from_env() {
+    echo "TEST: the SSH target and its jump host come from .env, the jump only when set"
+    local jumped direct
+    jumped=$(ssh_target_from_env LLM_SSH_HOST=target.test LLM_SSH_USER=op LLM_SSH_JUMP=hop@jump.test)
+    direct=$(ssh_target_from_env LLM_SSH_HOST=target.test LLM_SSH_USER=op)
+    if [[ "$jumped" == "op@target.test "*"-J hop@jump.test "* && "$direct" == "op@target.test "* && "$direct" != *"-J"* ]]; then
+        pass "target from .env, jump only when configured"
     else
         fail "with jump: '$jumped'; without: '$direct'"
     fi
@@ -613,11 +625,26 @@ test_unit_leaves_per_instance_values_to_systemd() {
     pass "per-instance values stay as \${VAR} / %i"
 }
 
+test_refuses_a_target_address_in_the_config() {
+    echo "TEST: a remote: block is refused, naming the .env keys that replace it"
+    local cfg out rc
+    cfg=$(mktemp)
+    yq '.remote = {"host": "h", "user": "u"}' "$FIXTURES/amd.yaml" > "$cfg"
+    out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
+    rc=$?
+    rm -f "$cfg"
+    if ((rc != 0)) && grep -q 'LLM_SSH_HOST' <<<"$out"; then
+        pass "remote: refused, pointing at .env"
+    else
+        fail "rc=$rc: $out"
+    fi
+}
+
 test_rejects_flat_legacy_schema() {
     echo "TEST: the old single-instance schema fails with a clear message"
     local cfg out rc
     cfg=$(mktemp)
-    printf 'remote: {host: h, user: u}\nruntime: {engine: podman, gpu: amd}\nllama: {context_size: 32768, parallel_slots: 8}\n' > "$cfg"
+    printf 'runtime: {engine: podman, gpu: amd}\nllama: {context_size: 32768, parallel_slots: 8}\n' > "$cfg"
     out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render base 2>&1)
     rc=$?
     rm -f "$cfg"
@@ -681,7 +708,8 @@ else
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \
              test_sudo_gets_the_password_over_key_auth \
-             test_ssh_hops_through_the_configured_jump \
+             test_ssh_target_and_jump_come_from_env \
+             test_refuses_a_target_address_in_the_config \
              test_cmdline_arg_reads_the_value_after_its_exact_flag \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
