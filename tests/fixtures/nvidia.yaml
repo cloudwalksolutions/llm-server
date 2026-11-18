@@ -26,10 +26,10 @@ defaults:
   container_image: example.invalid/llama:cuda
 
 instances:
-  # kv_unified: true means -c is NOT divided across slots
   shared:
     port: 8081
     model_file: Model-C.gguf
     context_per_request: 8192
     parallel_slots: 2
     kv_unified: true
+    kv_pool: 16384

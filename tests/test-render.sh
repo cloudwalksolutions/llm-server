@@ -76,16 +76,59 @@ test_context_is_multiplied_not_divided() {
     pass "CONTEXT_SIZE=$total = 16384 x $slots"
 }
 
-test_kv_unified_is_not_divided() {
-    echo "TEST: kv_unified:true leaves CONTEXT_SIZE undivided"
-    local out total
-    out=$(render nvidia shared)
-    total=$(conf_val "$out" CONTEXT_SIZE)
-    if [[ "$total" != "8192" ]]; then
-        fail "kv_unified:true should give CONTEXT_SIZE=8192, got $total"
-        return
+# The argv the unit would hand the container engine, by running its own sh -c
+# wrapper with the rendered conf as the environment and a stub for the engine.
+launch_argv() {
+    local fixture="$1" inst="$2" stub script
+    stub=$(mktemp -d)
+    printf '#!/bin/sh\nprintf "%%s\\n" "$@"\n' > "$stub/engine"; chmod +x "$stub/engine"
+    script=$(render_unit "$fixture" | awk '
+        /^ExecStart=\/bin\/sh -c / { on = 1; sub(/^ExecStart=\/bin\/sh -c \047/, "") }
+        on { sub(/\\$/, ""); print }
+        on && /\047$/ { exit }' | tr '\n' ' ' | sed "s/' *\$//")
+    script=${script//%i/$inst}
+    script=$(sed -E "s#exec [^ ]+ run#exec $stub/engine run#" <<<"$script")
+    ( set -a; eval "$(render "$fixture" "$inst")"; set +a; sh -c "$script" )
+    rm -rf "$stub"
+}
+
+test_vision_launches_only_with_a_projector() {
+    echo "TEST: mmproj_file and image_min_tokens reach llama-server, and nothing is passed without them"
+    local with without
+    with=$(launch_argv amd overridden | tr '\n' ' ')
+    without=$(launch_argv amd base | tr '\n' ' ')
+    if [[ "$(cmdline_arg --mmproj "$with")" == "/models/Proj-B.gguf" \
+          && "$(cmdline_arg --image-min-tokens "$with")" == "1024" \
+          && "$without" != *"--mmproj"* && "$without" != *"--image-min-tokens"* ]]; then
+        pass "--mmproj and --image-min-tokens only where configured"
+    else
+        fail "with: $with | without: $without"
     fi
-    pass "kv_unified:true -> -c 8192 for 2 slots"
+}
+
+test_refuses_a_pool_smaller_than_one_request() {
+    echo "TEST: a kv_pool below context_per_request is refused, since no request could get its window"
+    local cfg out rc
+    cfg=$(mktemp)
+    yq '.instances.shared.kv_pool = 4096' "$FIXTURES/nvidia.yaml" > "$cfg"
+    out=$(LLAMA_CONFIG="$cfg" "$DEPLOY" --render shared 2>&1); rc=$?
+    rm -f "$cfg"
+    if ((rc != 0)) && grep -q "kv_pool" <<<"$out"; then
+        pass "pool smaller than a request refused"
+    else
+        fail "rc=$rc: $out"
+    fi
+}
+
+test_kv_unified_shares_one_pool() {
+    echo "TEST: kv_unified:true launches one --kv-unified pool of kv_pool tokens"
+    local argv
+    argv=$(launch_argv nvidia shared | tr '\n' ' ')
+    if [[ "$argv" == *" --kv-unified "* && "$(cmdline_arg -c "$argv")" == "16384" ]]; then
+        pass "--kv-unified -c 16384 for 2 slots of up to 8192"
+    else
+        fail "argv: $argv"
+    fi
 }
 
 # The number must survive llama.cpp's PAD256 rounding, or the config lies.
@@ -352,7 +395,8 @@ test_example_documents_every_key() {
     for k in port model_file context_per_request parallel_slots kv_unified \
              batch_size ubatch_size threads_gen threads_batch threads_http \
              cache_reuse cache_type_k cache_type_v flash_attn draft_model \
-             draft_max reasoning reasoning_budget reasoning_budget_message container_image; do
+             draft_max reasoning reasoning_budget reasoning_budget_message container_image \
+             kv_pool mmproj_file image_min_tokens; do
         grep -qE "^\s*$k:" config/llama.example.yaml || missing+=("$k")
     done
     if ((${#missing[@]} > 0)); then
@@ -732,7 +776,9 @@ if [[ $# -ge 1 ]]; then
 else
     for t in test_golden_renders \
              test_context_is_multiplied_not_divided \
-             test_kv_unified_is_not_divided \
+             test_kv_unified_shares_one_pool \
+             test_refuses_a_pool_smaller_than_one_request \
+             test_vision_launches_only_with_a_projector \
              test_derivation_round_trips \
              test_refuses_a_window_it_cannot_deliver \
              test_accepts_a_window_it_can_deliver \

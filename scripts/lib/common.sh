@@ -227,6 +227,10 @@ load_instance() {
 
     INST_DRAFT_MODEL=$(_ivalue "$name" draft_model)
     [[ "$INST_DRAFT_MODEL" == "null" ]] && INST_DRAFT_MODEL=""
+    INST_MMPROJ_FILE=$(_ivalue "$name" mmproj_file)
+    [[ "$INST_MMPROJ_FILE" == "null" ]] && INST_MMPROJ_FILE=""
+    INST_IMAGE_MIN_TOKENS=$(_ivalue "$name" image_min_tokens)
+    [[ "$INST_IMAGE_MIN_TOKENS" == "null" ]] && INST_IMAGE_MIN_TOKENS=0
 
     local p="instances.$name"
     _require_int "$p.port" "$INST_PORT" || return 1
@@ -256,6 +260,8 @@ load_instance() {
     _require_no_control_chars "$p.model_file"      "$INST_MODEL_FILE"      || return 1
     _require_no_control_chars "$p.container_image" "$INST_CONTAINER_IMAGE" || return 1
     _require_no_control_chars "$p.draft_model"     "$INST_DRAFT_MODEL"     || return 1
+    _require_no_control_chars "$p.mmproj_file"     "$INST_MMPROJ_FILE"     || return 1
+    _require_uint "$p.image_min_tokens" "$INST_IMAGE_MIN_TOKENS" || return 1
     _require_str "$p.reasoning_budget_message" "$INST_REASONING_BUDGET_MESSAGE" || return 1
     _require_no_control_chars "$p.reasoning_budget_message" "$INST_REASONING_BUDGET_MESSAGE" || return 1
     if [[ "$INST_REASONING_BUDGET_MESSAGE" == *[\"\\\$\`]* ]]; then
@@ -311,7 +317,13 @@ load_instance() {
 
     # llama.cpp: n_ctx_seq = kv_unified ? n_ctx : PAD256(n_ctx / n_seq_max)
     if [[ "$INST_KV_UNIFIED" == "true" ]]; then
-        INST_TOTAL_CONTEXT="$INST_CONTEXT_PER_REQUEST"
+        INST_KV_POOL=$(_ivalue "$name" kv_pool)
+        _require_int "$p.kv_pool" "$INST_KV_POOL" || return 1
+        if ((INST_KV_POOL < INST_CONTEXT_PER_REQUEST)); then
+            _cfg_err "$p.kv_pool ($INST_KV_POOL) is smaller than one request's context_per_request ($INST_CONTEXT_PER_REQUEST)"
+            return 1
+        fi
+        INST_TOTAL_CONTEXT="$INST_KV_POOL"
     else
         INST_TOTAL_CONTEXT=$((INST_CONTEXT_PER_REQUEST * INST_PARALLEL_SLOTS))
     fi
