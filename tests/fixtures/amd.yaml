@@ -48,5 +48,7 @@ instances:
     draft_model: Draft-B.gguf
     draft_max: 24
     spec_type: draft-mtp
+    mmproj_file: Proj-B.gguf
+    image_min_tokens: 1024
     reasoning: "off"
     reasoning_budget: 0

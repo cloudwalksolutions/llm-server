@@ -49,6 +49,7 @@ LLAMA_PORT=$INST_PORT
 MODEL_FILE=$INST_MODEL_FILE
 CONTEXT_SIZE=$INST_TOTAL_CONTEXT
 PARALLEL_SLOTS=$INST_PARALLEL_SLOTS
+KV_UNIFIED=$INST_KV_UNIFIED
 BATCH_SIZE=$INST_BATCH_SIZE
 UBATCH_SIZE=$INST_UBATCH_SIZE
 THREADS_GEN=$INST_THREADS_GEN
@@ -60,6 +61,8 @@ CACHE_TYPE_V=$INST_CACHE_TYPE_V
 FLASH_ATTN=$INST_FLASH_ATTN
 DRAFT_MODEL=$INST_DRAFT_MODEL
 DRAFT_MAX=$INST_DRAFT_MAX
+MMPROJ_FILE=$INST_MMPROJ_FILE
+IMAGE_MIN_TOKENS=$INST_IMAGE_MIN_TOKENS
 SPEC_TYPE=$INST_SPEC_TYPE
 REASONING=$INST_REASONING
 REASONING_BUDGET=$INST_REASONING_BUDGET
@@ -173,6 +176,7 @@ check_derivation() {
     local n bad=0 eff
     for n in "${INSTANCE_NAMES[@]}"; do
         load_instance "$n" || return 1
+        [[ "$INST_KV_UNIFIED" == "true" ]] && continue
         eff=$(effective_ctx_per_request "$INST_TOTAL_CONTEXT" "$INST_PARALLEL_SLOTS" "$INST_KV_UNIFIED")
         if [[ "$eff" != "$INST_CONTEXT_PER_REQUEST" ]]; then
             echo -e "${RED}$n: asked for $INST_CONTEXT_PER_REQUEST/request but llama.cpp would give $eff${NC}" >&2
@@ -236,6 +240,15 @@ done
     echo -e "${RED}No existing instance to take the API key from; this script never invents one.${NC}" >&2
     exit 1
 }
+
+for name in "${INSTANCE_NAMES[@]}"; do
+    load_instance "$name"
+    [[ -z "$INST_MMPROJ_FILE" ]] && continue
+    remote_exec "test -f $MODELS_DIR/$INST_MMPROJ_FILE" || {
+        echo -e "${RED}$name needs $MODELS_DIR/$INST_MMPROJ_FILE, which is not on the target (make add-model).${NC}" >&2
+        exit 1
+    }
+done
 
 RETIRED_INSTANCES=()
 for conf in $(remote_exec "ls $INSTANCES_DIR/*.conf 2>/dev/null" || true); do

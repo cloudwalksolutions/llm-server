@@ -152,6 +152,19 @@ instances:
     threads_batch: 6
     threads_http: 4
 
+  # One shared KV pool of kv_pool tokens across its slots (-c kv_pool --kv-unified);
+  # any one request may use up to context_per_request of it. Reads images through
+  # its projector; image_min_tokens 0 keeps llama.cpp's own minimum.
+  my-vision-model:
+    port: 8084
+    model_file: Qwen3.6-35B-A3B-Q8_0.gguf
+    context_per_request: 262144
+    parallel_slots: 3
+    kv_unified: true
+    kv_pool: 393216
+    mmproj_file: mmproj-Qwen3.6-35B-A3B-BF16.gguf
+    image_min_tokens: 1024
+
 resources:
   limit_nofile: 65535
   limit_memlock: infinity

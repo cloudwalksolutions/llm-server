@@ -91,6 +91,31 @@ assert_streamed_tool_call() {
     fi
 }
 
+# Only a working vision path can name the word in the picture, and it has to do
+# so through a tool call, the shape a client uses.
+assert_image_seen() {
+    local name="$1" port="$2" key="$3" label="${4:-image read}" body out word
+    body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" \
+        --arg img "data:image/png;base64,$(base64 < tests/fixtures/img/pelican.png | tr -d '\n')" '{
+        model: $m, max_tokens: $mt, tool_choice: "required",
+        messages: [{role: "user", content: [
+            {type: "text", text: "Record the single word written in this image."},
+            {type: "image_url", image_url: {url: $img}}]}],
+        tools: [{type: "function", function: {
+            name: "record_word",
+            description: "Record a word read from an image",
+            parameters: {type: "object", properties: {word: {type: "string"}}, required: ["word"]}}}]}')
+    out=$(printf '%s' "$body" | remote_exec "curl -s --max-time 180 -H 'Authorization: Bearer $key' \
+        -H 'Content-Type: application/json' --data-binary @- \
+        http://127.0.0.1:$port/v1/chat/completions" 2>/dev/null || echo "")
+    word=$(jq -r '.choices[0].message.tool_calls[0].function.arguments | fromjson | .word' <<<"$out" 2>/dev/null)
+    if [[ "${word^^}" == "PELICAN" ]]; then
+        ok "$label: the model read \"$word\" through a tool call"
+    else
+        bad "$label: want PELICAN, got [${word:-$(jq -c '.error // .choices[0].message' <<<"$out" 2>/dev/null | head -c 200)}]"
+    fi
+}
+
 # A client may send earlier thinking back as reasoning_content; the template must
 # put it back inside <think>, across turns.
 assert_replays_reasoning() {
@@ -221,6 +246,19 @@ for name in "${INSTANCE_NAMES[@]}"; do
         cat "$tmp/1" "$tmp/2"
         PASSED=$((PASSED + $(cat "$tmp/1" "$tmp/2" | grep -c PASS)))
         FAILED=$((FAILED + $(cat "$tmp/1" "$tmp/2" | grep -c FAIL)))
+        rm -rf "$tmp"
+    fi
+    assert_eq "vision" "$(jq -r '.modalities.vision // false' <<<"$props" 2>/dev/null)" \
+        "$([[ -n "$INST_MMPROJ_FILE" ]] && echo true || echo false)"
+    if [[ -n "$INST_MMPROJ_FILE" ]]; then
+        tmp=$(mktemp -d)
+        for s in $(seq 1 "$INST_PARALLEL_SLOTS"); do
+            (assert_image_seen "$name" "$INST_PORT" "$key" "image read $s/$INST_PARALLEL_SLOTS") >"$tmp/$s" &
+        done
+        wait
+        cat "$tmp"/*
+        PASSED=$((PASSED + $(cat "$tmp"/* | grep -c PASS)))
+        FAILED=$((FAILED + $(cat "$tmp"/* | grep -c FAIL)))
         rm -rf "$tmp"
     fi
     if jq -e '.chat_template_caps.supports_preserve_reasoning == true' <<<"$props" >/dev/null 2>&1; then
