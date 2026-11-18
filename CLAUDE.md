@@ -111,10 +111,7 @@ make list-models | switch-model MODEL=f.gguf INSTANCE=name | add-model REPO=r MO
 
 ## Docs
 
-- `specs/context-window-deploy.md` — architecture, runbook, perf baseline, known issues
-- `specs/context-window-deploy.md` also carries **Open items with the consuming app** —
-  the measured facts and the decisions still waiting on them. The reply to their asks
-  lives in their repo (`apps/twofit-app/src/api/specs/llm-server.md`), not here.
+- `specs/context-window-deploy.md` — architecture, measured memory and prefill, why the routed model runs its shape
 - `specs/kv-quant-study.md` — measured cost of KV quantization (generated; do not hand-edit)
 - `specs/ollama.md` — why the Ollama backend is installable but unmanaged
 
