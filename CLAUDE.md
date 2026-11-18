@@ -53,12 +53,13 @@ became 2816 tokens.
 - `templates/llama-server@.service.in` — the unit template, i.e. the actual argv
 - `scripts/deploy-llama.sh` — renders the unit + instance confs, preflights, restarts only what changed, rolls back on failure
 - `scripts/lib/common.sh` — config load/validation (`load_config`, `load_instance`), SSH helpers
-- `scripts/verify-deploy.sh` — asserts yaml == conf == live process == `/props` == `/slots`, **and makes a real streamed tool call**
-- `scripts/kv-quant-study.sh` — measures what KV quantization costs; writes `specs/kv-quant-study.md`
+- `scripts/verify-deploy.sh` — asserts yaml == conf == live process == `/props` == `/slots`, **makes a real streamed tool call**, and has every slot read `tests/fixtures/img/pelican.png` where a projector is set
+- `scripts/kv-quant-study.sh` — measures what KV quantization costs, and prefill at depth (`--bench`); writes `specs/kv-quant-study.md`. Loads its own model copy, so stop instances first
 - `scripts/bench-agent.sh` — streamed, tool-calling, multi-turn benchmark; gates on correctness
 - `tests/test-render.sh` — offline suite; no network, no SSH
 - `tests/test-verify-detects-drift.sh` — asserts `make verify` actually goes red on drift
 - `tests/fixtures/agent-session.json` — the recorded session `bench-agent` replays
+- `tests/fixtures/make-long-session.sh` — generates a long-context session at any depth; never committed
 - `.env` — `LLM_HOST`, `LLAMA_API_KEY`, `SSH_PASS` or `SSH_KEY`, and the SSH target
   `LLM_SSH_HOST`/`LLM_SSH_USER`/`LLM_SSH_JUMP` (gitignored). This repo is public: no
   address, user or host name belongs in a committed file, commit message or PR
