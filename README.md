@@ -103,7 +103,7 @@ name that would not survive interpolation, or a control character in any value.
 ```bash
 make lint          # shellcheck
 make test-unit     # offline: config refusal, derived context, defaults/overrides, goldens
-make verify        # live: config vs deployed vs process vs /slots, + a streamed tool call
+make verify        # live: config vs deployed vs process vs /slots, a streamed tool call, and an image read where a projector is set
 make test-drift    # asserts verify actually goes RED when the target drifts
 make test-context  # effective window, long prompts, tool-shaped turns, truncation
 make test          # API smoke test
@@ -156,6 +156,21 @@ Latency is recorded but advisory, as above.
 The replayed history is the *recorded* assistant/tool message rather than the model's live
 output, so the prompt prefix is identical every run and percentiles stay comparable.
 
+A fixture turn can name the facts its answer must contain (`expect_contains`) or the exact
+arguments its tool call must carry (`args_match`). `BENCH_TOOL_CHOICE=turn` forces a call on
+tool turns and forbids one on answer turns.
+
+Long-context sessions are generated, not committed, at any depth up to the window:
+
+```bash
+tests/fixtures/make-long-session.sh 240000 /tmp/long.json   # ~240k tokens of history
+FIXTURE=/tmp/long.json BENCH_ITERATIONS=1 make bench-agent
+```
+
+The history is this repo's own, pinned to one commit, with facts planted at 10/50/90%
+depth and questions only recall can answer, then a tool call after the long prefix.
+Keep `BENCH_OUT_DIR` apart from the fixture's directory: the report is named for the label.
+
 ### Measuring, rather than assuming, what a setting costs
 
 ```bash
@@ -168,6 +183,20 @@ K or V is the sensitive one — over two corpora, one prose and one built from r
 tool-calling turns, using `llama-perplexity --kl-divergence`. It reports tail KLD and
 top-1 token agreement rather than means, because a malformed tool call is a handful of
 tokens going wrong.
+
+It studies the routed model at `STUDY_CTX` × `STUDY_CHUNKS` tokens and loads its own copy of
+that model, so on a full GPU it refuses until instances are stopped; `--plan` says whether it
+fits. The tool-calling corpus is rendered by the live instance, so build it first
+(`--corpora`) and stop instances after. The reference logits for one context live in host
+RAM: at 131072 they are OOM-killed, so 65536 × 2 chunks is this host's ceiling.
+
+```bash
+STUDY_CTX=65536 STUDY_CHUNKS=2 ./scripts/kv-quant-study.sh --corpora
+BENCH_DEPTHS=0,32768,131072,250000 ./scripts/kv-quant-study.sh --bench   # prefill per KV type at each depth
+STUDY_DIR=/opt/llm/kv-study ./scripts/kv-quant-study.sh --clean          # remove every study's files
+```
+
+`--bench` measures time, so stop every instance first: traffic on another one halves it.
 
 ## Server management
 
