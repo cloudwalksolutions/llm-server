@@ -68,9 +68,9 @@ load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
 # The instance whose model and API key we borrow. Any instance serving the model
 # under test will do; we only read from it.
 STUDY_INSTANCE="${STUDY_INSTANCE:-$ROUTER_DEFAULT}"
-STUDY_DIR="${STUDY_DIR:-/opt/llm/kv-study}"
 STUDY_CTX="${STUDY_CTX:-8192}"
 STUDY_CHUNKS="${STUDY_CHUNKS:-16}"
+BENCH_DEPTHS="${BENCH_DEPTHS:-0}"
 REPORT="${REPORT:-specs/kv-quant-study.md}"
 
 # name  cache_type_k  cache_type_v   — 'base' must be first; it writes the
@@ -110,6 +110,7 @@ load_instance "$STUDY_INSTANCE" >/dev/null || {
     echo -e "${RED}no such instance: $STUDY_INSTANCE${NC}" >&2; exit 1; }
 MODEL_FILE="$INST_MODEL_FILE"
 PORT="$INST_PORT"
+STUDY_DIR="${STUDY_DIR:-/opt/llm/kv-study/${MODEL_FILE%.gguf}-c$STUDY_CTX}"
 
 TOKENS=$((STUDY_CTX * STUDY_CHUNKS))
 # 151870 bytes/token measured on this build (vocab 151936, ~1 byte per entry).
@@ -117,10 +118,12 @@ KLD_BYTES_PER_TOKEN=151870
 KLD_GIB=$((TOKENS * KLD_BYTES_PER_TOKEN / 1073741824))
 # A corpus shorter than this cannot fill --chunks, and llama-perplexity silently
 # processes fewer chunks rather than complaining — which would make two arms
-# incomparable for a reason nothing reports. ~3 bytes/token is conservative for
-# both English prose and the token-dense JSON in the tools corpus.
-CORPUS_MIN_BYTES=$((TOKENS * 3))
-CORPUS_BUILD_BYTES=$((TOKENS * 5))
+# incomparable for a reason nothing reports. It also refuses outright with fewer
+# than twice the context in tokens. ~3 bytes/token is conservative for both
+# English prose and the token-dense JSON in the tools corpus.
+CORPUS_TOKENS=$(( TOKENS > 2 * STUDY_CTX ? TOKENS : 2 * STUDY_CTX ))
+CORPUS_MIN_BYTES=$((CORPUS_TOKENS * 3))
+CORPUS_BUILD_BYTES=$((CORPUS_TOKENS * 5))
 
 # ── Remote helpers ────────────────────────────────────────────────────────────
 # :z on the writable mount — the target is Fedora with SELinux enforcing, and
@@ -146,14 +149,14 @@ _bench() {
 # ── Corpora ───────────────────────────────────────────────────────────────────
 # Prose: wikitext-2 test split, the standard reference corpus.
 build_prose() {
-    echo -e "${CYAN}prose${NC}: wikitext-2 test split ($CORPUS_BUILD_BYTES bytes)"
+    echo -e "${CYAN}prose${NC}: wikitext-2 test split, then train ($CORPUS_BUILD_BYTES bytes)"
     remote_exec "set -e
         mkdir -p $STUDY_DIR && cd $STUDY_DIR
         if [ ! -f wikitext-2-raw/wiki.test.raw ]; then
             curl -sL -o wt.zip https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
             unzip -o -q wt.zip && rm -f wt.zip
         fi
-        head -c $CORPUS_BUILD_BYTES wikitext-2-raw/wiki.test.raw > prose.txt
+        cat wikitext-2-raw/wiki.test.raw wikitext-2-raw/wiki.train.raw | head -c $CORPUS_BUILD_BYTES > prose.txt
         wc -c prose.txt"
 }
 
@@ -318,6 +321,11 @@ run_arm() {
             echo -e "${RED}could not write the KLD base (SELinux? disk?)${NC}"
             rm -f /tmp/.kvarm.$$; return 1
         fi
+        if ! grep -qE 'Final estimate|Mean    KLD' /tmp/.kvarm.$$; then
+            echo -e "${RED}failed${NC} (no estimate)"
+            grep -E ' E ' /tmp/.kvarm.$$ | tail -3 >&2
+            rm -f /tmp/.kvarm.$$; return 1
+        fi
         echo -e "${GREEN}ok${NC}"
     else
         echo -e "${RED}failed${NC}"
@@ -333,8 +341,8 @@ run_arm() {
 # ("99.0%   KLD:   0.657441"), so matching a float across the whole line returns
 # 99.0 rather than the value. Everything up to the first colon is the label.
 _num() {
-    grep -m1 "^$2" "$1" 2>/dev/null \
-        | sed 's/^[^:]*://' \
+    grep -F "$2" "$1" 2>/dev/null \
+        | awk -v label="$2" '{ print substr($0, index($0, label) + length(label)) }' \
         | grep -oE '[-0-9]+\.[0-9]+' | head -1
 }
 
@@ -363,16 +371,18 @@ parse_arm() {
 # every quality number above a measurement of the wrong code path, so check that
 # prefill throughput stays in the same league across arms.
 run_bench() {
-    echo -e "${BLUE}Timing guard${NC} — prefill throughput per arm"
+    echo -e "${BLUE}Timing guard${NC} — prefill throughput per arm, at depths $BENCH_DEPTHS"
     echo -e "${YELLOW}note:${NC} this one needs a quiet target; concurrent traffic invalidates it\n"
-    local arm ctk ctv
+    local arm ctk ctv out err
+    out=$(mktemp); err=$(mktemp)
     for spec in "${ARMS[@]}"; do
         read -r arm ctk ctv <<<"$spec"
-        printf '  %-5s %-5s/%-5s ' "$arm" "$ctk" "$ctv"
-        _bench "-ctk $ctk -ctv $ctv -p 512 -n 0 -r 3 -o csv" 2>/dev/null \
-            | awk -F, '/pp512/ {printf "%8.1f t/s\n", $(NF-1)}' | tail -1 \
-            || echo "failed"
+        _bench "-ctk $ctk -ctv $ctv -p 2048 -b 2048 -ub 2048 -n 0 -r 1 -d $BENCH_DEPTHS -o jsonl" \
+            > "$out" 2> "$err" || { echo "  $arm $ctk/$ctv failed:"; tail -3 "$err" | sed 's/^/    /'; }
+        jq -r --arg arm "$arm" --arg kv "$ctk/$ctv" \
+            '"  \($arm) \($kv)  depth \(.n_depth)  \(.avg_ts | floor) t/s"' "$out"
     done
+    rm -f "$out" "$err"
     echo -e "\nAny arm far below the others is on CPU attention, not a quality result."
 }
 
@@ -387,7 +397,7 @@ write_report() {
     done
 
     {
-        echo "# What KV cache quantization costs Qwen3-14B on this target"
+        echo "# What KV cache quantization costs ${MODEL_FILE%.gguf} on this target"
         echo ""
         echo "Generated by \`scripts/kv-quant-study.sh\` on $(date -u +%Y-%m-%dT%H:%MZ)."
         echo "This file replaces asserted numbers with measured ones. Do not edit by hand;"
@@ -401,7 +411,7 @@ write_report() {
         echo "| context | \`-c $STUDY_CTX\`, \`--chunks $STUDY_CHUNKS\` = $TOKENS tokens per arm |"
         echo "| flash attention | \`--flash-attn on\` explicitly, never \`auto\` |"
         echo "| backend | Vulkan/RADV, gfx1151 |"
-        echo "| build | $(remote_exec "curl -sf http://127.0.0.1:$PORT/props -H 'Authorization: Bearer $(remote_conf_value "$INSTANCES_DIR/$STUDY_INSTANCE.conf" LLAMA_API_KEY)'" 2>/dev/null | jq -r '.build_info // "unknown"') |"
+        echo "| image | \`${INST_CONTAINER_IMAGE##*:}\` |"
         echo ""
         echo "## Results"
         echo ""
@@ -480,6 +490,15 @@ model_gib() {
 # The model, its KV at this context, and room for compute buffers.
 study_need_gib() { echo $(( $(model_gib) + 6 )); }
 
+refuse_unless_it_fits() {
+    local need free
+    need=$(study_need_gib); free=$(gpu_free_gib)
+    if ((free < need)); then
+        echo -e "${RED}refusing${NC}: needs ~$need GiB of GTT, $free GiB free. Stop instances first (--plan)." >&2
+        exit 1
+    fi
+}
+
 show_plan() {
     echo -e "${BLUE}KV quantization study — plan${NC}\n"
     echo -e "${YELLOW}what runs${NC}"
@@ -525,6 +544,7 @@ case "$MODE" in
         ;;
     bench)
         test_ssh || { echo -e "${RED}cannot reach target${NC}" >&2; exit 1; }
+        refuse_unless_it_fits
         run_bench
         ;;
     report)
@@ -537,11 +557,7 @@ case "$MODE" in
     run)
         test_ssh || { echo -e "${RED}cannot reach target${NC}" >&2; exit 1; }
         echo -e "${BLUE}KV quantization study${NC} — $MODEL_FILE on $REMOTE_HOST\n"
-        need=$(study_need_gib); free=$(gpu_free_gib)
-        if ((free < need)); then
-            echo -e "${RED}refusing${NC}: needs ~$need GiB of GTT, $free GiB free. Stop instances first (--plan)." >&2
-            exit 1
-        fi
+        refuse_unless_it_fits
 
         # Reuse a corpus only if it is big enough to fill --chunks. Testing mere
         # existence would silently reuse a short file, and llama-perplexity
