@@ -22,49 +22,40 @@ n_ctx_seq = kv_unified ? n_ctx : GGML_PAD(n_ctx / n_seq_max, 256)
 turns it off and re-enables the division. Nothing expressed the number that actually
 matters, so 12 slots silently produced 12 unusably small windows.
 
-## Current state
+## Memory, as measured
 
-| instance | port | per request | slots | `-c` | KV |
-|---|---|---|---|---|---|
-| `qwen3-14b-1m` | 8081 | 40960 | 1 | 40960 | q8_0 |
-| `qwen3-14b` | 8082 | **16384** | 8 | 131072 | q8_0 |
-| `qwen3-8b` | 8083 | 4096 | 8 | 32768 | q8_0 |
+AMD Strix Halo (gfx1151), Vulkan/RADV, 124 GiB of unified memory. The firmware
+carve-out is at its minimum and the GPU allocates GTT from system RAM, capped at
+112 GiB so the host keeps 12 (`make verify` asserts both). GTT and RAM are one pool:
+memory the GPU holds is memory the host does not have.
 
-`qwen3-14b-1m` moved from `q4_0` to `q8_0` on 2026-08-09 — see
-`specs/kv-quant-study.md` for the measurement, and note that the claim which
-prompted it (that `q4_0` harms tool calling specifically) was *not* what the
-numbers supported.
+With the 35B (f16 KV, a 393216-token shared pool, its vision projector) and
+gpt-oss-120b loaded: **GTT 109.1 of 112 GiB used, 10 GiB of host RAM available**
+(2026-11-18, llamacpp-b12479). Anything that loads a second copy of a model,
+such as `kv-quant-study.sh`, needs instances stopped first; its `--plan` says.
 
-### Target hardware, as measured
+## Why the 35B runs this shape
 
-Beelink GTR9 Pro, Fedora, podman, AMD Strix Halo (gfx1151) on Vulkan/RADV.
+Measured on llamacpp-b12479 with every instance stopped (`kv-quant-study.sh`):
 
-| | |
-|---|---|
-| system RAM | 30 GiB |
-| VRAM | 98304 MiB (96 GiB), carved out in firmware |
-| Vulkan-visible total | 229376 MiB (includes GTT) |
-| CPU | 16 physical cores / 32 threads |
-| llama.cpp build | `b7966-8872ad212` |
-| prefill throughput | ~790 tok/s (Qwen3-14B-Q4_K_M, `-c 8192`) |
-
-The RAM/VRAM split is the part worth remembering: `free -g` shows 30 GiB and
-looks alarming, but the GPU's 96 GiB is a separate carve-out — earlier docs
-described "128GB total, ~100GB usable" as one undifferentiated pool, which made
-memory planning wrong in both directions.
-
-VRAM went from 78904 to ~41400 MiB of 98304. `qwen3-14b-1m` had been set to
-`-c 1048576`, but Qwen3's `n_ctx_train` is 40960 and llama.cpp caps a slot there
-(`the slot context (1048576) exceeds the training context of the model (40960) - capping`).
-It was reserving ~45 GiB of KV for a window it could never use.
-
-The `-1m` in the instance name is a leftover from that misconfiguration and describes
-nothing about the model: MEASURED from the startup log, `freq_scale = 1` and
-`freq_scale_train = 1`, so **no rope scaling is active** — it is the same
-`Qwen3-14B-Q4_K_M.gguf` the coach runs. Going beyond 40960 *would* require YaRN, which
-Qwen documents as degrading shorter prompts, but nothing here is paying that cost today.
-The observed peak on that instance is 2768 tokens (`make status`, `ctx peak`), so there is
-no reason to go looking for more window.
+- **Prefill falls with depth** — q8_0 KV, tok/s for 2048 new tokens at depth
+  0 / 32k / 131k / 250k: 2071 / 1263 / 595 / 367. f16 is the same speed at every
+  depth; q4_0 is half as fast past 32k. Concurrent traffic on another instance can
+  halve these, so measure only on a quiet GPU.
+- **q8_0 KV costs tool-calling content at depth.** At 64k, versus f16, q8_0's
+  99.9% KLD on tool turns is 14.8 (prose 0.11), with 2.3pp more top-1 flips
+  (`specs/kv-quant-study.md`). f16 costs memory only, so the 35B runs f16.
+- **f16 at 262k is 5 GiB per slot**; three dedicated slots would not fit. One
+  `--kv-unified` pool of 393216 tokens (7.5 GiB) lets any request reach the
+  model's native 262144 while three run at once; overlapping very long chats
+  compete for the pool.
+- **A full pool evicts a cached prefix**, and the next turn reprocesses it from scratch:
+  a ~128k session lost its cache twice and its p95 time to first token went from 48s
+  to 200s, while the GPU was busy for minutes. `cache_ram: 4096` parks evicted states
+  in host RAM instead (states over 4096 MiB are still skipped); host RAM available
+  went from 10 to 7 GiB.
+- **The KLD reference at 131k is OOM-killed** (>85 GB of logits in host RAM), so
+  64k is this host's ceiling for the quality study.
 
 ## Architecture
 
@@ -72,19 +63,18 @@ The target does **not** run a single llama-server. It runs one instance per mode
 
 ```
 Cloudflare -> cloudflared -> nginx :8080 (njs router, /etc/llama-router/models.json)
-                               |-> 127.0.0.1:8081  llama-server@qwen3-14b-1m
-                               |-> 127.0.0.1:8082  llama-server@qwen3-14b
-                               `-> 127.0.0.1:8083  llama-server@qwen3-8b
+                               |-> 127.0.0.1:<port>  llama-server@<model-a>
+                               `-> 127.0.0.1:<port>  llama-server@<model-b>
 ```
 
-- `llama-server@.service` is a **template** owned by the target, not this repo.
-- Each instance reads `/opt/llm/instances/<name>.conf` — these are what `make deploy` owns.
+- `llama-server@.service` is rendered from `templates/llama-server@.service.in` and installed by deploy.
+- Each instance reads `/opt/llm/instances/<name>.conf`, also rendered by deploy.
 - nginx routes on the request's `model` field via `models.json`.
 - Instances bind loopback only; nginx is the sole reachable path.
 
-`config/llama.yaml` mirrors this with a `defaults:` block plus per-instance overrides,
-and states `context_per_request` — deploy derives `-c = context_per_request × parallel_slots`
-and asserts the result survives PAD256 before touching anything.
+`config/llama.yaml` states `context_per_request`. Deploy derives
+`-c = context_per_request × parallel_slots` and asserts it survives PAD256, or, with
+`kv_unified: true`, passes `--kv-unified` and `-c = kv_pool`, a pool every slot shares.
 
 ## Deploy
 
@@ -144,26 +134,6 @@ To make latency gate meaningfully, run the benchmark 5+ times with no changes, m
 the spread, and set each band to roughly 2x it. The current bands are placeholders sized
 from two observations and deliberately wide.
 
-## Known issue: the Cloudflare tunnel
-
-`make test-context` currently fails against the public endpoint with
-502s from the edge. This is **not** the inference server:
-
-- origin responds in ~0.65 s and `make verify` passes 27/27
-- the same tests pass against `LLM_ENDPOINT=http://<origin-host>:8080`
-- nginx's access log shows **no** requests arriving from `127.0.0.1` (the tunnel)
-  while the 502s occur
-- cloudflared is `active` with 4 registered connections and logs no errors
-
-So Cloudflare is not forwarding to a connected, healthy tunnel. Things to check, in
-order: the public hostname route for this tunnel in the Cloudflare dashboard, then
-`cloudflared` itself (running 2026.2.0, which warns it is outdated; 2026.7.3 is
-current), then the box's network — it is on WiFi (`wlp193s0`), which QUIC tolerates
-poorly.
-
-Restarting `cloudflared` restores it briefly (a run at 03:00–03:02 passed 4/5), then it
-stops forwarding again. Pinning `protocol: http2` made it worse and was reverted.
-
 ## Configuration notes
 
 - **`flash_attn: false` does not disable flash attention.** MEASURED (journal,
@@ -194,51 +164,6 @@ stops forwarding again. Pinning `protocol: http2` made it worse and was reverted
 - **A `false` or `""` override needs `has()`, not yq's `//`.** `//` treats both as
   absent, so a `false` instance value silently reverted to a `true` default. There is a
   regression test for this.
-
-## Open items with the consuming app
-
-The TwoFit agent's asks arrived as `specs/twofit-agent.md`, were answered on
-2026-08-09, and the reply now lives in that app's own repo at
-`src/api/specs/llm-server.md` — their inbox, their follow-ups. The inbound doc was
-deleted per the convention on both sides (a handoff doc goes away once its
-follow-ups have landed). What remains here is the part that is *our* decision, plus
-the measurements worth not re-deriving.
-
-**Measured facts worth keeping:**
-
-- **The agent instance's real context peak is 2768 tokens**, from
-  `llamacpp:n_tokens_max` via `make status`, against a configured 40960. The old
-  broken window was 2816 — a 48-token margin, which is a tidy explanation for the
-  flakiness that was reported. The counter resets on restart. So the window is not
-  the scarce resource the original sizing assumed, and it is the natural thing to
-  trade for concurrency.
-- **`/no_think` works.** A/B on `qwen3-14b-1m`, identical streamed tool-calling
-  request: plain gives 260 chars of `reasoning_content`, `+ /no_think` gives 0, and
-  both return `finish_reason: tool_calls` with valid arguments. The app's
-  `AGENT_THINKING_ENABLED=false` does what it claims.
-
-**Decisions waiting on them:**
-
-- **`parallel_slots: 1` on `qwen3-14b-1m` means no concurrency at all** — one
-  request at a time, and `requests_deferred` was observed reaching 2 while a single
-  turn generated. Given the 2768-token peak, `4 slots × 8192 @ q8_0` costs 2720 MiB
-  versus 3400 MiB for the current single 40960-token slot at `q8_0`, so more
-  concurrency is *cheaper* than the window it replaces. Blocked on how many
-  concurrent agent users to size for; that is a product question.
-- **Whether to add `-rea off` to the unit template.** `/no_think` suppresses the
-  reasoning text but never tells llama.cpp, so server-side state keyed on "is
-  thinking enabled" stays enabled. [llama.cpp #20345] claims that disables the GBNF
-  grammar compiled from each tool's JSON Schema — which is what makes well-formed
-  tool arguments a guarantee rather than good behaviour. **Unverified on this
-  build; not asserted.** Adding the flag is a one-line, no-downside change now that
-  deploy owns the argv; `make bench-agent` can A/B whether it moves the
-  malformed-argument rate before anyone bothers.
-- **Renaming `qwen3-14b-1m`.** The name is a leftover from the `-c 1048576` era and
-  describes nothing — no rope scaling, same GGUF as the coach. It is also the
-  `model` routing key, so a rename needs their `LLAMACPP_MODEL` and our router map
-  changed together.
-
-[llama.cpp #20345]: https://github.com/ggml-org/llama.cpp/issues/20345
 
 ## Rollback
 
