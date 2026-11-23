@@ -31,7 +31,7 @@ NC='\033[0m'
 VERIFY="./scripts/verify-deploy.sh"
 REAL_CONFIG="${LLAMA_CONFIG:-config/llama.yaml}"
 # One instance keeps the runtime down — each verify run makes a real tool call.
-INSTANCE="${DRIFT_INSTANCE:-qwen3-14b}"
+INSTANCE="${DRIFT_INSTANCE:-$(yq '.instances | keys | .[0]' "$REAL_CONFIG")}"
 
 PASSED=0
 FAILED=0
@@ -40,6 +40,8 @@ fail() { echo -e "${RED}FAIL${NC}: $*"; FAILED=$((FAILED + 1)); }
 
 load_config "$REAL_CONFIG" >/dev/null 2>&1 || {
     echo -e "${RED}cannot load $REAL_CONFIG${NC}" >&2; exit 1; }
+[[ "$(yq ".instances | has(\"$INSTANCE\")" "$REAL_CONFIG")" == true ]] || {
+    echo -e "${RED}$INSTANCE is not an instance in $REAL_CONFIG; set DRIFT_INSTANCE to one that is${NC}" >&2; exit 1; }
 test_ssh || { echo -e "${RED}cannot reach the target${NC}" >&2; exit 1; }
 
 BASE=$(mktemp)
@@ -92,28 +94,28 @@ expect_drift_detected() {
 test_verify_detects_drift() {
     echo "TEST: verify fails when the target disagrees with the config"
 
-    # Halving the window changes CONTEXT_SIZE, the live -c, /props and /slots at
-    # once — the exact shape of the 2816-token bug.
+    # Halving the window changes the live -c, /props and /slots at once — the
+    # exact shape of the 2816-token bug.
     expect_drift_detected "context_per_request drift" \
-        ".instances.$INSTANCE.context_per_request = 8192" "CONTEXT_SIZE"
+        ".instances[\"$INSTANCE\"].context_per_request = 8192" "n_ctx"
 
     # Slot count drift is what silently divided the window in the first place.
     expect_drift_detected "parallel_slots drift" \
-        ".instances.$INSTANCE.parallel_slots = 4" "PARALLEL_SLOTS"
+        ".instances[\"$INSTANCE\"].parallel_slots = 4" "PARALLEL_SLOTS"
 
     # KV type drift would otherwise only show up as a quality change.
     expect_drift_detected "cache_type drift" \
-        ".instances.$INSTANCE.cache_type_k = \"f16\" | .instances.$INSTANCE.cache_type_v = \"f16\"" \
+        ".instances[\"$INSTANCE\"].cache_type_k = \"q4_0\" | .instances[\"$INSTANCE\"].cache_type_v = \"q4_0\"" \
         "CACHE_TYPE_K"
 
     # Serving a different model than the config claims.
     expect_drift_detected "model_file drift" \
-        ".instances.$INSTANCE.model_file = \"Qwen3-8B-Q4_K_M.gguf\"" "MODEL_FILE"
+        ".instances[\"$INSTANCE\"].model_file = \"Qwen3-8B-Q4_K_M.gguf\"" "MODEL_FILE"
 
     # A port nothing is listening on: /props, /slots and the tool call all fail,
     # and the router map disagrees too.
     expect_drift_detected "port drift" \
-        ".instances.$INSTANCE.port = 8099" "backend"
+        ".instances[\"$INSTANCE\"].port = 8099" "backend"
 }
 
 echo -e "${BLUE}verify drift-detection tests${NC}"

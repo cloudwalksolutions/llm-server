@@ -24,7 +24,7 @@
 # effectively a stronger `make verify`. It does not deploy anything.
 #
 # Usage: ./tests/test-knob-propagation.sh [test-name]
-#        INSTANCE=qwen3-14b ./tests/test-knob-propagation.sh
+#        INSTANCE=<name in config/llama.yaml> ./tests/test-knob-propagation.sh
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
