@@ -10,7 +10,7 @@
 # Each command takes an optional instance name and otherwise applies to every
 # instance in config/llama.yaml:
 #   ./scripts/server-utils.sh show_status
-#   ./scripts/server-utils.sh restart_server qwen3-14b
+#   ./scripts/server-utils.sh restart_server <name in config/llama.yaml>
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
