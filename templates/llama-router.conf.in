@@ -11,7 +11,16 @@ server {
     }
 
     location = /v1/models {
+        auth_request /_key_check;
         js_content llama_router.listModels;
+    }
+
+    location = /_key_check {
+        internal;
+        proxy_pass http://127.0.0.1:@KEY_CHECK_PORT@/props;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Authorization $http_authorization;
     }
 
     location = /v1/chat/completions {
