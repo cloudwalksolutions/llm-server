@@ -84,8 +84,9 @@ ROUTER_TEMPLATE="$SCRIPT_DIR/../templates/llama-router.conf.in"
 ROUTER_JS_SOURCE="$SCRIPT_DIR/../templates/llama-router.js"
 
 render_router() {
-    local backends="" port name body
+    local backends="" key_check_port="" port name body
     for port in $(for name in "${INSTANCE_NAMES[@]}"; do load_instance "$name" && echo "$INST_PORT"; done | sort -un); do
+        key_check_port="${key_check_port:-$port}"
         backends+="
     location @backend_127_0_0_1_$port {
         internal;
@@ -106,6 +107,8 @@ render_router() {
     body=$(<"$ROUTER_TEMPLATE")
     body="${body//@ROUTER_JS@/$ROUTER_JS}"
     body="${body//@BACKENDS@/$backends}"
+    [[ -n "$ROUTER_DEFAULT" ]] && load_instance "$ROUTER_DEFAULT" && key_check_port="$INST_PORT"
+    body="${body//@KEY_CHECK_PORT@/$key_check_port}"
     printf '%s\n' "$body"
 }
 

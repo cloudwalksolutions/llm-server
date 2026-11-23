@@ -49,6 +49,16 @@ test_api_lists_models() {
     echo -e "${GREEN}PASS${NC}: /v1/models returned $count model(s) (active: $model_id)"
 }
 
+test_model_list_requires_the_key() {
+    echo "TEST: GET /v1/models without the key is refused"
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$ENDPOINT/v1/models")
+    if [[ "$code" != "401" ]]; then
+        echo -e "${RED}FAIL${NC}: /v1/models without a key answered $code, want 401"
+        exit 1
+    fi
+    echo -e "${GREEN}PASS${NC}: /v1/models without a key answered 401"
+}
+
 # ── TEST 2 ────────────────────────────────────────────────────────────────────
 test_completion_reports_model() {
     echo "TEST: Chat completion response includes .model field and content"
@@ -170,6 +180,8 @@ if [[ $# -ge 1 ]]; then
     "$1"
 else
     test_api_lists_models
+    echo ""
+    test_model_list_requires_the_key
     echo ""
     test_completion_reports_model
     echo ""
