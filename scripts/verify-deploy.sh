@@ -158,8 +158,16 @@ if [[ "$RUNTIME_GPU" == "amd" ]]; then
     for arg in amd_iommu=off amdgpu.gttsize; do
         [[ "$cmdline" == *"$arg"* ]] && bad "kernel cmdline still has $arg" || ok "kernel cmdline has no $arg"
     done
+    gtt_free=$((gtt - $(gib mem_info_gtt_used)))
+    ((gtt_free >= GTT_FREE_FLOOR_GIB)) && ok "free GTT is ${gtt_free} GiB" \
+        || bad "free GTT is ${gtt_free} GiB, want at least $GTT_FREE_FLOOR_GIB"
     echo ""
 fi
+
+mem_available=$(remote_exec "awk '/^MemAvailable/ {printf \"%d\", \$2/1048576}' /proc/meminfo")
+((mem_available >= MEM_AVAILABLE_FLOOR_GIB)) && ok "MemAvailable is ${mem_available} GiB" \
+    || bad "MemAvailable is ${mem_available} GiB, want at least $MEM_AVAILABLE_FLOOR_GIB"
+echo ""
 
 for name in "${INSTANCE_NAMES[@]}"; do
     load_instance "$name" || { echo -e "${RED}bad config for $name${NC}"; FAILED=$((FAILED + 1)); continue; }

@@ -12,6 +12,8 @@ runtime:
   instances_dir: /opt/llm/instances
   router_map: /etc/llama-router/models.json
   router_default: my-model    # the instance a request without a known model reaches
+  gtt_free_floor_gib: 1       # make verify fails below this much free GPU memory (amd)
+  mem_available_floor_gib: 4  # make verify fails below this much MemAvailable
 
 # Applied to every instance unless the instance overrides it.
 defaults:

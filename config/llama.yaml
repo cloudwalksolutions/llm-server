@@ -4,6 +4,8 @@ runtime:
   instances_dir: /opt/llm/instances
   router_map: /etc/llama-router/models.json
   router_default: qwen3.6-35b-a3b
+  gtt_free_floor_gib: 1
+  mem_available_floor_gib: 4
 
 defaults:
   kv_unified: false

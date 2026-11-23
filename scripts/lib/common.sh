@@ -103,6 +103,10 @@ load_config() {
 
     _require_enum "runtime.engine" "$RUNTIME_ENGINE" podman docker || return 1
     _require_enum "runtime.gpu" "$RUNTIME_GPU" amd nvidia || return 1
+    GTT_FREE_FLOOR_GIB=$(yq '.runtime.gtt_free_floor_gib // 0' "$CONFIG_FILE")
+    MEM_AVAILABLE_FLOOR_GIB=$(yq '.runtime.mem_available_floor_gib // 0' "$CONFIG_FILE")
+    _require_uint "runtime.gtt_free_floor_gib" "$GTT_FREE_FLOOR_GIB" || return 1
+    _require_uint "runtime.mem_available_floor_gib" "$MEM_AVAILABLE_FLOOR_GIB" || return 1
 
     # Rendered into the unit template. These were dead config until deploy took
     # ownership of the unit — the values were hardcoded on the target.
