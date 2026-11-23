@@ -118,6 +118,14 @@ test_verify_detects_drift() {
         ".instances[\"$INSTANCE\"].port = 8099" "backend"
 }
 
+test_verify_fails_below_memory_floors() {
+    echo "TEST: verify fails when free memory is below its floor"
+    expect_drift_detected "free GTT below its floor" \
+        ".runtime.gtt_free_floor_gib = 1000" "free GTT"
+    expect_drift_detected "MemAvailable below its floor" \
+        ".runtime.mem_available_floor_gib = 1000" "MemAvailable"
+}
+
 echo -e "${BLUE}verify drift-detection tests${NC}"
 echo -e "  target:   $REMOTE_USER@$REMOTE_HOST"
 echo -e "  instance: $INSTANCE"
@@ -131,6 +139,8 @@ else
     test_verify_passes_when_config_matches_target
     echo ""
     test_verify_detects_drift
+    echo ""
+    test_verify_fails_below_memory_floors
     echo ""
 fi
 
