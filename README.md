@@ -223,6 +223,19 @@ make add-model REPO=org/repo MODEL=file.gguf
 make switch-model MODEL=file.gguf INSTANCE=name
 ```
 
+## ComfyUI trials
+
+ComfyUI shares the GPU's memory with the models and cannot cap itself on this
+hardware, so it never runs beside every instance. It runs only in a trial window, with
+the instances in `comfyui.trial_stops` stopped.
+
+```bash
+make comfyui-models   # once, and after changing comfyui.models
+make comfyui-start
+make verify           # includes a real generation while ComfyUI runs
+make comfyui-stop     # always, so the stopped instances serve again
+```
+
 ## Docs
 
 - `config/llama.example.yaml` — full config schema

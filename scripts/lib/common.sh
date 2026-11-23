@@ -163,6 +163,8 @@ load_config() {
         _seen_ports[$p]="$n"
     done
 
+    _load_comfyui || return 1
+
     if [[ -f .env ]]; then
         # shellcheck disable=SC1091
         source .env
@@ -186,6 +188,55 @@ load_config() {
     export REMOTE_HOST REMOTE_USER REMOTE_JUMP SSH_AUTH SSH_KEY SSH_PASS
     export RUNTIME_ENGINE RUNTIME_GPU INSTANCES_DIR ROUTER_MAP CONFIG_FILE
     export MODELS_DIR UNIT_PATH RES_LIMIT_NOFILE RES_LIMIT_MEMLOCK
+}
+
+_load_comfyui() {
+    COMFYUI_ENABLED=false
+    [[ "$(yq '.comfyui' "$CONFIG_FILE")" == "null" ]] && return 0
+    COMFYUI_ENABLED=true
+    COMFYUI_PORT=$(yq '.comfyui.port' "$CONFIG_FILE")
+    COMFYUI_IMAGE=$(yq '.comfyui.container_image' "$CONFIG_FILE")
+    COMFYUI_DIR=$(yq '.comfyui.dir' "$CONFIG_FILE")
+    mapfile -t COMFYUI_TRIAL_STOPS < <(yq -r '.comfyui.trial_stops // [] | .[]' "$CONFIG_FILE")
+    _require_int "comfyui.port" "$COMFYUI_PORT" || return 1
+    _require_str "comfyui.container_image" "$COMFYUI_IMAGE" || return 1
+    _require_no_control_chars "comfyui.container_image" "$COMFYUI_IMAGE" || return 1
+    _require_safe_path "comfyui.dir" "$COMFYUI_DIR" absolute || return 1
+
+    local n p
+    for n in "${COMFYUI_TRIAL_STOPS[@]}"; do
+        [[ " ${INSTANCE_NAMES[*]} " == *" $n "* ]] \
+            || { _cfg_err "comfyui.trial_stops names $n, which is not an instance"; return 1; }
+    done
+    for n in "${INSTANCE_NAMES[@]}"; do
+        p=$(_ivalue "$n" port)
+        [[ "$p" == "$COMFYUI_PORT" ]] && { _cfg_err "comfyui.port $p is also instance $n's port"; return 1; }
+    done
+
+    local i count
+    count=$(yq '.comfyui.models // [] | length' "$CONFIG_FILE")
+    for ((i = 0; i < count; i++)); do
+        p="comfyui.models[$i]"
+        _require_match "$p.repo" "$(yq ".comfyui.models[$i].repo" "$CONFIG_FILE")" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || return 1
+        _require_match "$p.revision" "$(yq ".comfyui.models[$i].revision" "$CONFIG_FILE")" '^[0-9a-f]{40}$' || return 1
+        _require_match "$p.sha256" "$(yq ".comfyui.models[$i].sha256" "$CONFIG_FILE")" '^[0-9a-f]{64}$' || return 1
+        _require_safe_path "$p.file" "$(yq ".comfyui.models[$i].file" "$CONFIG_FILE")" relative || return 1
+        _require_safe_path "$p.dest" "$(yq ".comfyui.models[$i].dest" "$CONFIG_FILE")" relative || return 1
+    done
+}
+
+_require_match() {
+    local name="$1" value="$2" pattern="$3"
+    [[ "$value" =~ $pattern ]] || { _cfg_err "$name must match $pattern (got '$value')"; return 1; }
+}
+
+_require_safe_path() {
+    local name="$1" value="$2" kind="$3" pattern='^[A-Za-z0-9_./-]+$'
+    [[ "$kind" == absolute ]] && pattern='^/[A-Za-z0-9_./-]+$'
+    [[ "$kind" == relative ]] && pattern='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
+    _require_match "$name" "$value" "$pattern" || return 1
+    [[ "/$value/" == *"/../"* ]] && { _cfg_err "$name may not contain '..'"; return 1; }
+    return 0
 }
 
 # Per-instance value, falling back to defaults.

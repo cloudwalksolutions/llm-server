@@ -159,10 +159,31 @@ render_unit() {
     printf '%s\n' "$body"
 }
 
+COMFYUI_TEMPLATE="$SCRIPT_DIR/../templates/comfyui.service.in"
+COMFYUI_UNIT_PATH=/etc/systemd/system/comfyui.service
+
+render_comfyui_unit() {
+    local conflicts="" name body
+    for name in "${COMFYUI_TRIAL_STOPS[@]}"; do
+        conflicts+="Conflicts=llama-server@$name.service"$'\n'
+    done
+    body=$(<"$COMFYUI_TEMPLATE")
+    body="${body//@CONFLICTS@/${conflicts%$'\n'}}"
+    body="${body//@ENGINE_BIN@//usr/bin/$RUNTIME_ENGINE}"
+    body="${body//@COMFYUI_DIR@/$COMFYUI_DIR}"
+    body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
+    body="${body//@COMFYUI_IMAGE@/$COMFYUI_IMAGE}"
+    printf '%s\n' "$body"
+}
+
 if [[ "$MODE" == "render" ]]; then
     [[ -n "$RENDER_ONE" ]] || { echo "--render needs an instance name" >&2; exit 2; }
     if [[ "$RENDER_ONE" == "--unit" || "$RENDER_ONE" == "unit" ]]; then
         render_unit
+        exit 0
+    fi
+    if [[ "$RENDER_ONE" == "comfyui" ]]; then
+        render_comfyui_unit
         exit 0
     fi
     if [[ "$RENDER_ONE" == "router" ]]; then
@@ -371,10 +392,22 @@ for pair in "$ROUTER_CONF:CONF" "$ROUTER_JS:JS"; do
     fi
 done
 ROUTER_CHANGED=0
-[[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]] && ROUTER_CHANGED=1
+[[ "$(jq -cS . <<<"$NEW_ROUTER_JSON")" != "$(jq -cS . <<<"$ROUTER_JSON")" ]] && ROUTER_CHANGED=1
 ((ROUTER_FILES_CHANGED)) && ROUTER_CHANGED=1
 
-if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED)); then
+NEW_COMFYUI_UNIT=""
+[[ "$COMFYUI_ENABLED" == true ]] && NEW_COMFYUI_UNIT=$(render_comfyui_unit)
+CUR_COMFYUI_UNIT=$(remote_exec "cat $COMFYUI_UNIT_PATH 2>/dev/null" || echo "")
+COMFYUI_CHANGED=0
+if [[ "$CUR_COMFYUI_UNIT" == "$NEW_COMFYUI_UNIT" ]]; then
+    [[ -n "$NEW_COMFYUI_UNIT" ]] && echo -e "  ${GREEN}unchanged${NC}  $COMFYUI_UNIT_PATH"
+else
+    COMFYUI_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_UNIT_PATH"
+    diff -u <(printf '%s\n' "$CUR_COMFYUI_UNIT") <(printf '%s\n' "$NEW_COMFYUI_UNIT") | sed 's/^/      /' || true
+fi
+
+if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED && ! COMFYUI_CHANGED)); then
     echo -e "\n${GREEN}Nothing to do — target already matches config.${NC}"
     exit 0
 fi
@@ -387,6 +420,7 @@ if [[ "$MODE" == "dry-run" ]]; then
     ((${#RETIRED_INSTANCES[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would stop, disable and unroute: ${RETIRED_INSTANCES[*]}${NC}"
     ((ROUTER_FILES_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $ROUTER_CONF and $ROUTER_JS${NC}"
     ((ROUTER_CHANGED)) && echo -e "${YELLOW}DRY RUN — would nginx -t and reload nginx${NC}"
+    ((COMFYUI_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_UNIT_PATH + daemon-reload (never starts it)${NC}"
     echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]:-nothing}${NC}"
     echo -e "${YELLOW}Run 'make deploy' to apply${NC}"
     exit 0
@@ -494,6 +528,26 @@ if ((ROUTER_CHANGED)); then
     printf '%s\n' "$NEW_ROUTER_JS" | remote_write_sudo "$ROUTER_JS" 644
     remote_exec_sudo "nginx -t -q && systemctl reload nginx"
     echo -e "  ${GREEN}router written + nginx -t + reloaded${NC}"
+fi
+
+if ((COMFYUI_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Updating $COMFYUI_UNIT_PATH"
+    if [[ -n "$CUR_COMFYUI_UNIT" ]]; then
+        remote_exec_sudo "cp $COMFYUI_UNIT_PATH $COMFYUI_UNIT_PATH.backup.$TIMESTAMP"
+        rb "cp $COMFYUI_UNIT_PATH.backup.$TIMESTAMP $COMFYUI_UNIT_PATH && systemctl daemon-reload"
+    fi
+    if [[ -z "$NEW_COMFYUI_UNIT" ]]; then
+        remote_exec_sudo "systemctl stop comfyui && rm -f $COMFYUI_UNIT_PATH && systemctl daemon-reload"
+        echo -e "  ${GREEN}retired; unit kept as comfyui.service.backup.$TIMESTAMP${NC}"
+    else
+        [[ -z "$CUR_COMFYUI_UNIT" ]] && rb "rm -f $COMFYUI_UNIT_PATH && systemctl daemon-reload"
+        remote_exec "mkdir -p $(_shq "$COMFYUI_DIR/models") $(_shq "$COMFYUI_DIR/output")"
+        printf '%s\n' "$NEW_COMFYUI_UNIT" | remote_write_sudo "$COMFYUI_UNIT_PATH" 644
+        [[ "$(remote_exec "cat $COMFYUI_UNIT_PATH")" == "$NEW_COMFYUI_UNIT" ]] \
+            || { echo -e "${RED}the written ComfyUI unit does not match what was rendered${NC}" >&2; false; }
+        remote_exec_sudo "systemctl daemon-reload"
+        echo -e "  ${GREEN}written + verified + daemon-reload; starts only with make comfyui-start${NC}"
+    fi
 fi
 
 for name in "${RETIRED_INSTANCES[@]}"; do

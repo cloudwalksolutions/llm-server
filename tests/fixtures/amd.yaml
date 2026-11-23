@@ -52,3 +52,15 @@ instances:
     image_min_tokens: 1024
     reasoning: "off"
     reasoning_budget: 0
+
+comfyui:
+  port: 8188
+  container_image: example.invalid/comfyui:test
+  dir: /opt/llm/comfyui
+  trial_stops: [overridden]
+  models:
+    - repo: example/model
+      revision: 0123456789abcdef0123456789abcdef01234567
+      file: split_files/vae/ae.safetensors
+      dest: vae/ae.safetensors
+      sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

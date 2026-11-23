@@ -171,6 +171,20 @@ resources:
   limit_nofile: 65535
   limit_memlock: infinity
 
+# Optional. ComfyUI runs only between make comfyui-start and make comfyui-stop,
+# never at boot, published on loopback.
+comfyui:
+  port: 8188
+  container_image: registry.example/amd-strix-halo-comfyui:tag
+  dir: /opt/llm/comfyui
+  trial_stops: [my-model]   # instances stopped while ComfyUI runs, to free memory
+  models:                   # each lands at <dir>/models/<dest>, pinned by commit and sha256
+    - repo: org/repo
+      revision: 0123456789abcdef0123456789abcdef01234567
+      file: split_files/vae/ae.safetensors
+      dest: vae/ae.safetensors
+      sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
 # There is deliberately no `benchmark:` block. Benchmark concurrency is derived
 # from the instance's parallel_slots (scripts/benchmark.sh), so a second number
 # here could only ever disagree with the server's real capacity — the previous
