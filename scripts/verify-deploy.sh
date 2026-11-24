@@ -96,7 +96,8 @@ assert_streamed_tool_call() {
 assert_image_seen() {
     local name="$1" port="$2" key="$3" label="$4" image="$5" question="$6" want="$7" body out word
     body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" --arg q "$question" \
-        --rawfile b64 <(base64 < "$image" | tr -d '\n') '("data:image/png;base64," + $b64) as $img | {
+        --arg mime "image/${image##*.}" \
+        --rawfile b64 <(base64 < "$image" | tr -d '\n') '("data:" + $mime + ";base64," + $b64) as $img | {
         model: $m, max_tokens: $mt, tool_choice: "required",
         messages: [{role: "user", content: [
             {type: "text", text: $q},
@@ -403,6 +404,8 @@ for name in "${INSTANCE_NAMES[@]}"; do
         PASSED=$((PASSED + $(cat "$tmp"/* | grep -c PASS)))
         FAILED=$((FAILED + $(cat "$tmp"/* | grep -c FAIL)))
         rm -rf "$tmp"
+        assert_image_seen "$name" "$INST_PORT" "$key" "animated WebP read" \
+            tests/fixtures/img/mango.webp "Record the single word written in this image." MANGO
     fi
     if jq -e '.chat_template_caps.supports_preserve_reasoning == true' <<<"$props" >/dev/null 2>&1; then
         assert_replays_reasoning "$INST_PORT" "$key"

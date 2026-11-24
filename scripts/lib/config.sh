@@ -27,6 +27,7 @@ load_config() {
     INSTANCES_DIR=$(yq '.runtime.instances_dir // "/opt/llm/instances"' "$CONFIG_FILE")
     ROUTER_MAP=$(yq '.runtime.router_map // "/etc/llama-router/models.json"' "$CONFIG_FILE")
     MODELS_DIR=$(yq '.runtime.models_dir // "/opt/llm/models"' "$CONFIG_FILE")
+    FFMPEG_DIR=/opt/llm/ffmpeg
     UNIT_PATH=$(yq '.runtime.unit_path // "/etc/systemd/system/llama-server@.service"' "$CONFIG_FILE")
     ROUTER_CONF=$(yq '.runtime.router_conf // "/etc/nginx/conf.d/llama-router.conf"' "$CONFIG_FILE")
     ROUTER_JS=$(yq '.runtime.router_js // "/etc/nginx/njs/llama-router.js"' "$CONFIG_FILE")
@@ -59,6 +60,11 @@ load_config() {
         echo "  See config/llama.example.yaml for the schema." >&2
         return 1
     fi
+
+    FFMPEG_URL=$(yq '.runtime.ffmpeg.url' "$CONFIG_FILE")
+    _require_match "runtime.ffmpeg.url" "$FFMPEG_URL" '^https://[^[:space:]]+$' || return 1
+    FFMPEG_SHA256=$(yq '.runtime.ffmpeg.sha256' "$CONFIG_FILE")
+    _require_match "runtime.ffmpeg.sha256" "$FFMPEG_SHA256" '^[0-9a-f]{64}$' || return 1
 
     mapfile -t INSTANCE_NAMES < <(yq -r '.instances | to_entries | .[] | select(.value.enabled != false) | .key' "$CONFIG_FILE")
     if ((${#INSTANCE_NAMES[@]} == 0)); then

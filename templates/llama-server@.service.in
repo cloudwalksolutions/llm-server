@@ -55,6 +55,7 @@ ExecStart=/bin/sh -c '\
         --rm \
 @GPU_ARGS@
         -v @MODELS_DIR@:/models:ro \
+        -v @FFMPEG_DIR@:/opt/ffmpeg:ro \
         -p 127.0.0.1:${LLAMA_PORT}:${LLAMA_PORT} \
         -e LLAMA_API_KEY \
         ${CONTAINER_IMAGE} \
@@ -79,6 +80,7 @@ ExecStart=/bin/sh -c '\
             --cache-ram ${CACHE_RAM} \
             --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}" $SAMPLING_ARGS \
             -m /models/${MODEL_FILE} $VISION_ARGS \
+            --video-ffmpeg-dir /opt/ffmpeg \
             --host 0.0.0.0 \
             --port ${LLAMA_PORT} \
             --metrics'

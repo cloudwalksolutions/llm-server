@@ -6,6 +6,9 @@ runtime:
   router_default: qwen3.6-35b-a3b
   gtt_free_floor_gib: 1
   mem_available_floor_gib: 4
+  ffmpeg:
+    url: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0.tar.xz
+    sha256: 73e29a56974ae5a651133a04584c7483b21afe941e17dc91d79814a758b608d3
 
 defaults:
   kv_unified: false

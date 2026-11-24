@@ -14,6 +14,9 @@ runtime:
   router_default: my-model    # the instance a request without a known model reaches
   gtt_free_floor_gib: 1       # make verify fails below this much free GPU memory (amd)
   mem_available_floor_gib: 4  # make verify fails below this much MemAvailable
+  ffmpeg:                     # the ffmpeg llama.cpp runs to decode WebP and video; needs 9.0+ for animated WebP
+    url: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0.tar.xz
+    sha256: 73e29a56974ae5a651133a04584c7483b21afe941e17dc91d79814a758b608d3
 
 # Applied to every instance unless the instance overrides it.
 defaults:
