@@ -13,16 +13,17 @@ test_ssh || { echo -e "${RED}Cannot reach target${NC}" >&2; exit 1; }
 
 GPU_LIMIT_GIB=112
 PAGE_BYTES=4096
-WANT="ttm.pages_limit=$((GPU_LIMIT_GIB * 1024 * 1024 * 1024 / PAGE_BYTES))"
+PAGES_LIMIT="ttm.pages_limit=$((GPU_LIMIT_GIB * 1024 * 1024 * 1024 / PAGE_BYTES))"
+LOCKUP_TIMEOUT="amdgpu.lockup_timeout=10000"
 args=$(remote_exec_sudo "grubby --info=DEFAULT" | sed -n 's/^args="\(.*\)"$/\1/p')
 echo "default kernel args: $args"
 
-if [[ " $args " == *" $WANT "* && "$args" != *amd_iommu=off* && "$args" != *amdgpu.gttsize* ]]; then
+if [[ " $args " == *" $PAGES_LIMIT "* && " $args " == *" $LOCKUP_TIMEOUT "* && "$args" != *amd_iommu=off* && "$args" != *amdgpu.gttsize* ]]; then
     echo -e "${GREEN}already set${NC}"
     exit 0
 fi
 
-CMD="grubby --update-kernel=ALL --remove-args='amd_iommu amdgpu.gttsize ttm.pages_limit' --args='$WANT'"
+CMD="grubby --update-kernel=ALL --remove-args='amd_iommu amdgpu.gttsize ttm.pages_limit amdgpu.lockup_timeout' --args='$PAGES_LIMIT $LOCKUP_TIMEOUT'"
 if ((DRY_RUN)); then
     echo -e "${YELLOW}DRY RUN — would run:${NC} $CMD"
     exit 0

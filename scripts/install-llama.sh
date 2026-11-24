@@ -70,10 +70,10 @@ phase1_system_setup() {
 
     log_info "Letting the GPU take up to 112 GiB from GTT (BIOS UMA frame buffer at its minimum)..."
 
-    if grep -q " ttm.pages_limit=29360128" /proc/cmdline 2>/dev/null; then
+    if grep -q " ttm.pages_limit=29360128" /proc/cmdline 2>/dev/null && grep -q " amdgpu.lockup_timeout=10000" /proc/cmdline 2>/dev/null; then
         log_info "Kernel parameters already configured"
     else
-        grubby --update-kernel=ALL --remove-args='amd_iommu amdgpu.gttsize ttm.pages_limit' --args='ttm.pages_limit=29360128'
+        grubby --update-kernel=ALL --remove-args='amd_iommu amdgpu.gttsize ttm.pages_limit amdgpu.lockup_timeout' --args='ttm.pages_limit=29360128 amdgpu.lockup_timeout=10000'
         log_warn "Kernel parameters updated - set the BIOS UMA frame buffer to its minimum, then REBOOT"
         touch /tmp/reboot_required
     fi

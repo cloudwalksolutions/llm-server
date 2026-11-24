@@ -40,9 +40,18 @@ async def outputs_within(comfyui, prompt_id, seconds):
     return entry["outputs"]
 
 
-async def queued(comfyui, prompt_id):
+async def jobs(comfyui):
     queue = (await comfyui.get("/queue")).json()
-    return any(job[1] == prompt_id for job in queue["queue_running"] + queue["queue_pending"])
+    return queue["queue_running"] + queue["queue_pending"]
+
+
+async def queued(comfyui, prompt_id):
+    return any(job[1] == prompt_id for job in await jobs(comfyui))
+
+
+async def rendering_video(comfyui):
+    return next((job[1] for job in await jobs(comfyui)
+                 if any(node["class_type"] == "SaveAnimatedWEBP" for node in job[2].values())), None)
 
 
 async def fetch(comfyui, file):
@@ -51,7 +60,7 @@ async def fetch(comfyui, file):
     return response.content
 
 
-def build_server(comfyui, wait=240, **settings):
+def build_server(comfyui, wait=120, **settings):
     mcp = FastMCP("comfyui", stateless_http=True, **settings)
 
     @mcp.tool()
@@ -78,7 +87,9 @@ def build_server(comfyui, wait=240, **settings):
         seconds: Annotated[int, Field(ge=1, le=5)] = 2,
         resolution: Literal["480p", "720p"] = "480p",
     ):
-        """Make a video: generate a short silent clip from a text prompt, at 832x480, which takes about two minutes per second of video, or, only when asked, 1280x720, which takes much longer. Returns the clip, or a job_id for get_job if it is still rendering."""
+        """Make a video: generate a short silent clip from a text prompt, at 832x480 or, only when asked, 1280x720. At 832x480 a 1 second clip takes about 2 minutes and a 2 second clip about 7; longer clips and 1280x720 take much longer. Returns the clip, or a job_id for get_job if it is still rendering. Calling it again while a clip renders returns that clip's job instead of starting another."""
+        if running := await rendering_video(comfyui):
+            return await clip_or_pending(running)
         width, height = VIDEO_SIZES[resolution]
         workflow = json.loads(VIDEO_WORKFLOW.read_text())
         workflow["5"]["inputs"]["text"] = prompt
