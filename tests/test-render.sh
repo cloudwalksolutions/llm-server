@@ -389,6 +389,14 @@ test_example_config_is_valid() {
     pass "example config is valid and renders every instance"
 }
 
+test_comfyui_example_is_valid() {
+    echo "TEST: config/comfyui.example.yaml loads, with a model from each source"
+    local out
+    out=$(COMFYUI_CONFIG=config/comfyui.example.yaml LLAMA_CONFIG=config/llama.example.yaml "$DEPLOY" --render comfyui 2>&1) \
+        || { fail "comfyui example failed to load: $(sed 's/\x1b\[[0-9;]*m//g' <<<"$out" | head -1)"; return; }
+    pass "comfyui example is valid"
+}
+
 test_example_documents_every_key() {
     echo "TEST: the example documents every key load_instance reads"
     local missing=() k
@@ -687,6 +695,26 @@ test_router_has_a_backend_for_every_instance() {
     pass "one backend per instance"
 }
 
+test_comfyui_is_published_on_loopback_only() {
+    echo "TEST: ComfyUI publishes one port, on loopback"
+    local unit
+    unit=$(render amd comfyui)
+    grep -q -- '-p 127.0.0.1:8188:8188' <<<"$unit" || { fail "ComfyUI is not published on loopback 8188"; return; }
+    [[ $(grep -c -- ' -p ' <<<"$unit") == 1 ]] || { fail "ComfyUI publishes more than one port"; return; }
+    pass "loopback only"
+}
+
+test_a_disabled_instance_is_not_deployed() {
+    echo "TEST: an instance with enabled: false is left out of the deploy"
+    local cfg
+    cfg=$(mktemp)
+    yq '.instances.overridden.enabled = false' "$FIXTURES/amd.yaml" > "$cfg"
+    load_config "$cfg" >/dev/null 2>&1
+    rm -f "$cfg"
+    [[ "${INSTANCE_NAMES[*]}" == "base" ]] || { fail "deployed instances are [${INSTANCE_NAMES[*]}], want [base]"; return; }
+    pass "only enabled instances are deployed"
+}
+
 test_unit_carries_resource_limits() {
     echo "TEST: resources: reaches the unit's Limit* directives"
     local cfg out
@@ -799,6 +827,7 @@ else
              test_unit_leaves_per_instance_values_to_systemd \
              test_rejects_flat_legacy_schema \
              test_example_config_is_valid \
+             test_comfyui_example_is_valid \
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \
@@ -815,6 +844,8 @@ else
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
              test_a_new_file_takes_its_directorys_owner \
              test_router_has_a_backend_for_every_instance \
+             test_comfyui_is_published_on_loopback_only \
+             test_a_disabled_instance_is_not_deployed \
              test_router_map_points_default_at_the_configured_instance \
              test_router_map_drops_a_retired_instance_and_keeps_the_rest; do
         "$t"

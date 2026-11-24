@@ -87,6 +87,7 @@ make kv-study-plan | kv-study
 make status | logs | logs-f | config | ssh          # all accept INSTANCE=<name>
 make start | stop | restart | enable | disable      # all accept INSTANCE=<name>
 make list-models | switch-model MODEL=f.gguf INSTANCE=name | add-model REPO=r MODEL=f.gguf
+make comfyui-models                                 # config/comfyui.yaml's pinned models
 ```
 
 ## Conventions

@@ -159,10 +159,27 @@ render_unit() {
     printf '%s\n' "$body"
 }
 
+COMFYUI_TEMPLATE="$SCRIPT_DIR/../templates/comfyui.service.in"
+COMFYUI_UNIT_PATH=/etc/systemd/system/comfyui.service
+
+render_comfyui_unit() {
+    local body
+    body=$(<"$COMFYUI_TEMPLATE")
+    body="${body//@ENGINE_BIN@//usr/bin/$RUNTIME_ENGINE}"
+    body="${body//@COMFYUI_DIR@/$COMFYUI_DIR}"
+    body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
+    body="${body//@COMFYUI_IMAGE@/$COMFYUI_IMAGE}"
+    printf '%s\n' "$body"
+}
+
 if [[ "$MODE" == "render" ]]; then
     [[ -n "$RENDER_ONE" ]] || { echo "--render needs an instance name" >&2; exit 2; }
     if [[ "$RENDER_ONE" == "--unit" || "$RENDER_ONE" == "unit" ]]; then
         render_unit
+        exit 0
+    fi
+    if [[ "$RENDER_ONE" == "comfyui" ]]; then
+        render_comfyui_unit
         exit 0
     fi
     if [[ "$RENDER_ONE" == "router" ]]; then
@@ -258,7 +275,7 @@ for conf in $(remote_exec "ls $INSTANCES_DIR/*.conf 2>/dev/null" || true); do
     name=$(basename "$conf" .conf)
     [[ " ${INSTANCE_NAMES[*]} " == *" $name "* ]] && continue
     RETIRED_INSTANCES+=("$name")
-    echo -e "  ${YELLOW}RETIRE${NC}     $name (no longer in config)"
+    echo -e "  ${YELLOW}RETIRE${NC}     $name (disabled or no longer in config)"
 done
 
 # nginx routes by this map; changing a port without it breaks routing.
@@ -371,10 +388,36 @@ for pair in "$ROUTER_CONF:CONF" "$ROUTER_JS:JS"; do
     fi
 done
 ROUTER_CHANGED=0
-[[ "$NEW_ROUTER_JSON" != "$ROUTER_JSON" ]] && ROUTER_CHANGED=1
+[[ "$(jq -cS . <<<"$NEW_ROUTER_JSON")" != "$(jq -cS . <<<"$ROUTER_JSON")" ]] && ROUTER_CHANGED=1
 ((ROUTER_FILES_CHANGED)) && ROUTER_CHANGED=1
 
-if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED)); then
+NEW_COMFYUI_UNIT=""
+[[ "$COMFYUI_CONFIGURED" == true ]] && NEW_COMFYUI_UNIT=$(render_comfyui_unit)
+CUR_COMFYUI_UNIT=$(remote_exec "cat $COMFYUI_UNIT_PATH 2>/dev/null" || echo "")
+COMFYUI_UNIT_CHANGED=0
+if [[ "$CUR_COMFYUI_UNIT" == "$NEW_COMFYUI_UNIT" ]]; then
+    [[ -n "$NEW_COMFYUI_UNIT" ]] && echo -e "  ${GREEN}unchanged${NC}  $COMFYUI_UNIT_PATH"
+else
+    COMFYUI_UNIT_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_UNIT_PATH"
+    diff -u <(printf '%s\n' "$CUR_COMFYUI_UNIT") <(printf '%s\n' "$NEW_COMFYUI_UNIT") | sed 's/^/      /' || true
+fi
+COMFYUI_ACTIVE=$(remote_exec "systemctl is-active comfyui" 2>/dev/null || true)
+COMFYUI_AT_BOOT=$(remote_exec "systemctl is-enabled comfyui" 2>/dev/null || true)
+COMFYUI_START=0
+COMFYUI_STOP=0
+if [[ "$COMFYUI_ENABLED" == true ]]; then
+    if ((COMFYUI_UNIT_CHANGED)) || [[ "$COMFYUI_ACTIVE" != active || "$COMFYUI_AT_BOOT" != enabled ]]; then
+        COMFYUI_START=1
+    fi
+elif [[ "$COMFYUI_ACTIVE" == active || "$COMFYUI_AT_BOOT" == enabled ]]; then
+    COMFYUI_STOP=1
+fi
+((COMFYUI_START)) && echo -e "  ${YELLOW}START${NC}      comfyui (enabled in $COMFYUI_CONFIG)"
+((COMFYUI_STOP)) && echo -e "  ${YELLOW}STOP${NC}       comfyui (disabled or not configured)"
+COMFYUI_CHANGED=$((COMFYUI_UNIT_CHANGED || COMFYUI_START || COMFYUI_STOP))
+
+if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED && ! COMFYUI_CHANGED)); then
     echo -e "\n${GREEN}Nothing to do — target already matches config.${NC}"
     exit 0
 fi
@@ -387,6 +430,9 @@ if [[ "$MODE" == "dry-run" ]]; then
     ((${#RETIRED_INSTANCES[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would stop, disable and unroute: ${RETIRED_INSTANCES[*]}${NC}"
     ((ROUTER_FILES_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $ROUTER_CONF and $ROUTER_JS${NC}"
     ((ROUTER_CHANGED)) && echo -e "${YELLOW}DRY RUN — would nginx -t and reload nginx${NC}"
+    ((COMFYUI_UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_UNIT_PATH + daemon-reload${NC}"
+    ((COMFYUI_STOP)) && echo -e "${YELLOW}DRY RUN — would stop and disable comfyui before any instance starts${NC}"
+    ((COMFYUI_START)) && echo -e "${YELLOW}DRY RUN — would enable and (re)start comfyui after the instances${NC}"
     echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]:-nothing}${NC}"
     echo -e "${YELLOW}Run 'make deploy' to apply${NC}"
     exit 0
@@ -496,6 +542,33 @@ if ((ROUTER_CHANGED)); then
     echo -e "  ${GREEN}router written + nginx -t + reloaded${NC}"
 fi
 
+if ((COMFYUI_STOP)); then
+    echo -e "${CYAN}[6/7]${NC} Stopping comfyui"
+    remote_exec_sudo "systemctl disable --now comfyui"
+    rb "systemctl enable --now comfyui"
+    echo -e "  ${GREEN}stopped and disabled${NC}"
+fi
+
+if ((COMFYUI_UNIT_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Updating $COMFYUI_UNIT_PATH"
+    if [[ -n "$CUR_COMFYUI_UNIT" ]]; then
+        remote_exec_sudo "cp $COMFYUI_UNIT_PATH $COMFYUI_UNIT_PATH.backup.$TIMESTAMP"
+        rb "cp $COMFYUI_UNIT_PATH.backup.$TIMESTAMP $COMFYUI_UNIT_PATH && systemctl daemon-reload"
+    fi
+    if [[ -z "$NEW_COMFYUI_UNIT" ]]; then
+        remote_exec_sudo "rm -f $COMFYUI_UNIT_PATH && systemctl daemon-reload"
+        echo -e "  ${GREEN}removed; kept as comfyui.service.backup.$TIMESTAMP${NC}"
+    else
+        [[ -z "$CUR_COMFYUI_UNIT" ]] && rb "rm -f $COMFYUI_UNIT_PATH && systemctl daemon-reload"
+        remote_exec "mkdir -p $(_shq "$COMFYUI_DIR/models") $(_shq "$COMFYUI_DIR/output")"
+        printf '%s\n' "$NEW_COMFYUI_UNIT" | remote_write_sudo "$COMFYUI_UNIT_PATH" 644
+        [[ "$(remote_exec "cat $COMFYUI_UNIT_PATH")" == "$NEW_COMFYUI_UNIT" ]] \
+            || { echo -e "${RED}the written ComfyUI unit does not match what was rendered${NC}" >&2; false; }
+        remote_exec_sudo "systemctl daemon-reload"
+        echo -e "  ${GREEN}written + verified + daemon-reload${NC}"
+    fi
+fi
+
 for name in "${RETIRED_INSTANCES[@]}"; do
     echo -e "${CYAN}[6/7]${NC} Retiring $name"
     remote_exec_sudo "systemctl disable --now llama-server@$name"
@@ -520,6 +593,19 @@ for name in "${RESTART[@]}"; do
     health_check "$name" "$INST_PORT" 300
     echo -e " ${GREEN}healthy${NC}"
 done
+
+if ((COMFYUI_START)); then
+    echo -ne "${CYAN}[7/7]${NC} Starting comfyui "
+    rb "systemctl disable --now comfyui"
+    remote_exec_sudo "systemctl enable comfyui && systemctl restart comfyui"
+    start=$(date +%s)
+    until [[ "$(remote_exec "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$COMFYUI_PORT/system_stats" 2>/dev/null)" == 200 ]]; do
+        (($(date +%s) - start < 900)) || { echo -e "\n${RED}comfyui did not answer within 900s${NC}" >&2; false; }
+        printf '.'
+        sleep 5
+    done
+    echo -e " ${GREEN}up${NC}"
+fi
 
 trap - ERR
 

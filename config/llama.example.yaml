@@ -120,6 +120,7 @@ defaults:
 # The instance NAME is what clients pass as "model".
 instances:
   my-model:
+    enabled: true             # false stops, disables and unroutes it; its settings stay here
     port: 8082
     model_file: Qwen3-14B-Q4_K_M.gguf
 

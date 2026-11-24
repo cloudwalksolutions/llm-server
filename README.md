@@ -223,6 +223,19 @@ make add-model REPO=org/repo MODEL=file.gguf
 make switch-model MODEL=file.gguf INSTANCE=name
 ```
 
+## ComfyUI
+
+`config/comfyui.yaml` holds ComfyUI's settings and models, and `enabled:` says whether it
+runs; `make deploy` converges it. ComfyUI shares the GPU's memory with the models and
+cannot cap itself on this hardware, so enabling it means disabling an instance
+(`enabled: false` in `config/llama.yaml`) to make room.
+
+```bash
+make comfyui-models   # after changing its models
+make deploy
+make verify           # includes a real generation while ComfyUI is enabled
+```
+
 ## Docs
 
 - `config/llama.example.yaml` — full config schema

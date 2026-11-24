@@ -50,6 +50,9 @@ help:
 	@echo "  make list-models                                List remote models"
 	@echo "  make add-model REPO=org/repo MODEL=file.gguf   Download model"
 	@echo "  make switch-model MODEL=f.gguf INSTANCE=name   Switch a model"
+	@echo ""
+	@echo "ComfyUI:"
+	@echo "  make comfyui-models  Put the models pinned in config/comfyui.yaml on the target"
 
 .PHONY: setup
 setup:
@@ -135,6 +138,10 @@ test-context:
 .PHONY: verify
 verify:
 	@./scripts/verify-deploy.sh
+
+.PHONY: comfyui-models
+comfyui-models:
+	@./scripts/comfyui-models.sh
 
 .PHONY: test-drift
 test-drift:

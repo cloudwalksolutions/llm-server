@@ -1,0 +1,16 @@
+# ComfyUI configuration schema. The live target's config is config/comfyui.yaml;
+# without that file the target runs no ComfyUI.
+
+enabled: true               # false stops and disables it; make deploy converges either way
+port: 8188                  # published on loopback only
+container_image: registry.example/amd-strix-halo-comfyui:tag
+dir: /opt/llm/comfyui
+models:                     # each lands at <dir>/models/<dest>, refused unless its sha256 matches
+  - repo: org/repo          # Hugging Face, pinned by commit
+    revision: 0123456789abcdef0123456789abcdef01234567
+    file: split_files/vae/ae.safetensors
+    dest: vae/ae.safetensors
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  - civitai: 123456         # Civitai, pinned by model version ID; CIVITAI_API_TOKEN in .env if it needs sign-in
+    dest: loras/my-lora.safetensors
+    sha256: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210

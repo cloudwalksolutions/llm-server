@@ -1,0 +1,10 @@
+enabled: true
+port: 8188
+container_image: example.invalid/comfyui:test
+dir: /opt/llm/comfyui
+models:
+  - repo: example/model
+    revision: 0123456789abcdef0123456789abcdef01234567
+    file: split_files/vae/ae.safetensors
+    dest: vae/ae.safetensors
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

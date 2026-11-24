@@ -49,6 +49,7 @@ instances:
       presence_penalty: 1.5
 
   gpt-oss-120b:
+    enabled: false
     port: 8090
     model_file: gpt-oss-120b-MXFP4.gguf
     context_per_request: 65536

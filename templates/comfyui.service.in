@@ -1,0 +1,41 @@
+[Unit]
+Description=ComfyUI
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=-@ENGINE_BIN@ rm -f comfyui
+ExecStart=@ENGINE_BIN@ run \
+        --name comfyui \
+        --rm \
+        --device /dev/kfd \
+        --device /dev/dri \
+        --group-add video \
+        --security-opt seccomp=unconfined \
+        -v @COMFYUI_DIR@/models:/opt/ComfyUI/models:ro \
+        -v @COMFYUI_DIR@/output:/opt/ComfyUI/output:Z \
+        -p 127.0.0.1:@COMFYUI_PORT@:8188 \
+        -e HSA_ENABLE_SDMA=0 \
+        -e TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+        -e TORCH_BLAS_PREFER_HIPBLASLT=1 \
+        @COMFYUI_IMAGE@ \
+        python /opt/ComfyUI/main.py \
+            --listen 0.0.0.0 \
+            --port 8188 \
+            --disable-mmap \
+            --cache-none \
+            --bf16-vae \
+            --disable-smart-memory \
+            --preview-method none \
+            --disable-auto-launch
+ExecStop=@ENGINE_BIN@ stop comfyui
+
+Restart=no
+TimeoutStartSec=900
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=comfyui
+
+[Install]
+WantedBy=multi-user.target

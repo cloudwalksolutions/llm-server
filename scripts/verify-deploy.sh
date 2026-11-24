@@ -169,6 +169,49 @@ mem_available=$(remote_exec "awk '/^MemAvailable/ {printf \"%d\", \$2/1048576}' 
     || bad "MemAvailable is ${mem_available} GiB, want at least $MEM_AVAILABLE_FLOOR_GIB"
 echo ""
 
+check_comfyui_generates_on_the_gpu() {
+    local comfy="http://127.0.0.1:$COMFYUI_PORT" device id start image file png
+    device=$(remote_exec "curl -s $comfy/system_stats" | jq -r '.devices[0].type // "none"')
+    [[ "$device" != cpu && "$device" != none ]] && ok "ComfyUI runs on $device" \
+        || bad "ComfyUI runs on $device, want a GPU"
+
+    id=$(jq -c '{prompt: .}' tests/fixtures/comfyui/smoke.api.json \
+        | remote_exec "curl -s -H 'Content-Type: application/json' --data-binary @- $comfy/prompt" \
+        | jq -r '.prompt_id // empty')
+    [[ -n "$id" ]] || { bad "ComfyUI refused the smoke workflow"; return; }
+
+    local entry error
+    start=$(date +%s)
+    until entry=$(remote_exec "curl -s $comfy/history/$id" | jq -c --arg id "$id" '.[$id] // empty') && [[ -n "$entry" ]]; do
+        (($(date +%s) - start < 600)) || { bad "smoke generation did not finish in 600s"; return; }
+        sleep 3
+    done
+    error=$(jq -r '.status.messages[]? | select(.[0] == "execution_error") | .[1].exception_message' <<<"$entry")
+    [[ -z "$error" ]] || { bad "smoke generation failed: $error"; return; }
+    image=$(jq -r '[.outputs[].images[]?.filename] | first // empty' <<<"$entry")
+
+    file=$(mktemp)
+    remote_exec "curl -s '$comfy/view?type=output&filename=$image'" > "$file"
+    png=$(xxd -p -s 16 -l 8 "$file")
+    [[ "$png" == 0000010000000100 ]] && ok "smoke generation is a 256x256 PNG" \
+        || bad "smoke generation is not a 256x256 PNG (IHDR $png)"
+    local bytes=$(($(wc -c <"$file")))
+    ((bytes > 20000)) && ok "smoke generation has detail ($bytes bytes)" \
+        || bad "smoke generation is $bytes bytes, too small to be a real image"
+    rm -f "$file"
+}
+
+if [[ "$COMFYUI_CONFIGURED" == true ]]; then
+    echo -e "${YELLOW}comfyui${NC}"
+    if [[ "$COMFYUI_ENABLED" == true ]]; then
+        assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "active"
+        check_comfyui_generates_on_the_gpu
+    else
+        assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
+    fi
+    echo ""
+fi
+
 for name in "${INSTANCE_NAMES[@]}"; do
     load_instance "$name" || { echo -e "${RED}bad config for $name${NC}"; FAILED=$((FAILED + 1)); continue; }
     echo -e "${YELLOW}$name${NC} (port $INST_PORT)"
