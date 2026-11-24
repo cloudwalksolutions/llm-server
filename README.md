@@ -252,7 +252,7 @@ COMFYUI_UI_HOST=<web UI hostname>
 ```
 
 An MCP server for ComfyUI, `comfyui-mcp/`, with `generate` (Z-Image Turbo stills) and `video` /
-`get_job` (Wan 2.2 5B clips, returned as animated WebP), runs beside it and is published at
+`get_job` (Wan 2.2 14B clips, returned as animated WebP), runs beside it and is published at
 `https://<api hostname>/mcp`, where it takes its own key, so either key can be rotated
 alone. Deploying it needs `uv` on the machine you deploy from.
 
