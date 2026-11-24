@@ -1,0 +1,13 @@
+# ComfyUI configuration schema. The live target's config is config/comfyui.yaml;
+# without that file the target runs no ComfyUI.
+
+enabled: true               # false stops and disables it; make deploy converges either way
+port: 8188                  # published on loopback only
+container_image: registry.example/amd-strix-halo-comfyui:tag
+dir: /opt/llm/comfyui
+models:                     # each lands at <dir>/models/<dest>, pinned by commit and sha256
+  - repo: org/repo
+    revision: 0123456789abcdef0123456789abcdef01234567
+    file: split_files/vae/ae.safetensors
+    dest: vae/ae.safetensors
+    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

@@ -687,15 +687,24 @@ test_router_has_a_backend_for_every_instance() {
     pass "one backend per instance"
 }
 
-test_comfyui_runs_on_loopback_only_and_only_in_a_trial() {
-    echo "TEST: ComfyUI publishes on loopback only, stops the trial instances, and never starts at boot"
+test_comfyui_is_published_on_loopback_only() {
+    echo "TEST: ComfyUI publishes one port, on loopback"
     local unit
     unit=$(render amd comfyui)
     grep -q -- '-p 127.0.0.1:8188:8188' <<<"$unit" || { fail "ComfyUI is not published on loopback 8188"; return; }
     [[ $(grep -c -- ' -p ' <<<"$unit") == 1 ]] || { fail "ComfyUI publishes more than one port"; return; }
-    grep -qx 'Conflicts=llama-server@overridden.service' <<<"$unit" || { fail "starting ComfyUI does not stop overridden"; return; }
-    grep -q '^\[Install\]' <<<"$unit" && { fail "ComfyUI would start at boot"; return; }
-    pass "loopback only, trial instances stopped, not at boot"
+    pass "loopback only"
+}
+
+test_a_disabled_instance_is_not_deployed() {
+    echo "TEST: an instance with enabled: false is left out of the deploy"
+    local cfg
+    cfg=$(mktemp)
+    yq '.instances.overridden.enabled = false' "$FIXTURES/amd.yaml" > "$cfg"
+    load_config "$cfg" >/dev/null 2>&1
+    rm -f "$cfg"
+    [[ "${INSTANCE_NAMES[*]}" == "base" ]] || { fail "deployed instances are [${INSTANCE_NAMES[*]}], want [base]"; return; }
+    pass "only enabled instances are deployed"
 }
 
 test_unit_carries_resource_limits() {
@@ -826,7 +835,8 @@ else
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
              test_a_new_file_takes_its_directorys_owner \
              test_router_has_a_backend_for_every_instance \
-             test_comfyui_runs_on_loopback_only_and_only_in_a_trial \
+             test_comfyui_is_published_on_loopback_only \
+             test_a_disabled_instance_is_not_deployed \
              test_router_map_points_default_at_the_configured_instance \
              test_router_map_drops_a_retired_instance_and_keeps_the_rest; do
         "$t"

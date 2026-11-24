@@ -1,7 +1,6 @@
 [Unit]
-Description=ComfyUI (trial windows only)
+Description=ComfyUI
 After=network.target
-@CONFLICTS@
 
 [Service]
 Type=simple
@@ -37,3 +36,6 @@ TimeoutStartSec=900
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=comfyui
+
+[Install]
+WantedBy=multi-user.target

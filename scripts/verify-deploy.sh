@@ -201,14 +201,13 @@ check_comfyui_generates_on_the_gpu() {
     rm -f "$file"
 }
 
-TRIAL_RUNNING=false
-if [[ "$COMFYUI_ENABLED" == true ]]; then
+if [[ "$COMFYUI_CONFIGURED" == true ]]; then
     echo -e "${YELLOW}comfyui${NC}"
-    if [[ "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" == active ]]; then
-        TRIAL_RUNNING=true
+    if [[ "$COMFYUI_ENABLED" == true ]]; then
+        assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "active"
         check_comfyui_generates_on_the_gpu
     else
-        echo "  ComfyUI is stopped; make comfyui-start to check it"
+        assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi
     echo ""
 fi
@@ -216,11 +215,6 @@ fi
 for name in "${INSTANCE_NAMES[@]}"; do
     load_instance "$name" || { echo -e "${RED}bad config for $name${NC}"; FAILED=$((FAILED + 1)); continue; }
     echo -e "${YELLOW}$name${NC} (port $INST_PORT)"
-    if [[ "$TRIAL_RUNNING" == true && " ${COMFYUI_TRIAL_STOPS[*]} " == *" $name "* ]]; then
-        assert_eq "stopped for the ComfyUI trial" "$(remote_exec "systemctl is-active llama-server@$name" 2>/dev/null)" "inactive"
-        echo ""
-        continue
-    fi
 
     unit="llama-server@$name"
     assert_eq "systemd active" "$(remote_exec "systemctl is-active $unit" 2>/dev/null)" "active"

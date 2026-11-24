@@ -6,20 +6,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
 load_config "${LLAMA_CONFIG:-config/llama.yaml}" || exit 1
-[[ "$COMFYUI_ENABLED" == true ]] || { echo -e "${RED}config has no comfyui: block${NC}" >&2; exit 1; }
+[[ "$COMFYUI_CONFIGURED" == true ]] || { echo -e "${RED}$COMFYUI_CONFIG does not exist${NC}" >&2; exit 1; }
 test_ssh || { echo -e "${RED}Cannot reach target${NC}" >&2; exit 1; }
 remote_exec "command -v hf >/dev/null 2>&1" \
     || { echo -e "${RED}'hf' CLI not found on the target; run the install script first${NC}" >&2; exit 1; }
 
 STAGING="$COMFYUI_DIR/.staging"
-count=$(yq '.comfyui.models | length' "$CONFIG_FILE")
+count=$(yq '.models | length' "$COMFYUI_CONFIG")
 for ((i = 0; i < count; i++)); do
-    m=".comfyui.models[$i]"
-    repo=$(yq "$m.repo" "$CONFIG_FILE")
-    revision=$(yq "$m.revision" "$CONFIG_FILE")
-    file=$(yq "$m.file" "$CONFIG_FILE")
-    sha256=$(yq "$m.sha256" "$CONFIG_FILE")
-    dest="$COMFYUI_DIR/models/$(yq "$m.dest" "$CONFIG_FILE")"
+    m=".models[$i]"
+    repo=$(yq "$m.repo" "$COMFYUI_CONFIG")
+    revision=$(yq "$m.revision" "$COMFYUI_CONFIG")
+    file=$(yq "$m.file" "$COMFYUI_CONFIG")
+    sha256=$(yq "$m.sha256" "$COMFYUI_CONFIG")
+    dest="$COMFYUI_DIR/models/$(yq "$m.dest" "$COMFYUI_CONFIG")"
 
     if [[ "$(remote_exec "sha256sum $(_shq "$dest") 2>/dev/null" | cut -d' ' -f1)" == "$sha256" ]]; then
         echo -e "  ${GREEN}present${NC}  $dest"
