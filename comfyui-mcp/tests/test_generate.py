@@ -70,7 +70,8 @@ async def test_the_generated_image_is_returned_as_image_content():
     result = await call_generate(fake_comfyui(comfyui))
 
     assert not result.isError
-    [image] = result.content
+    [note, image] = result.content
+    assert "already shown to the user" in note.text
     assert image.type == "image"
     assert image.mimeType == "image/png"
     assert base64.b64decode(image.data) == png
