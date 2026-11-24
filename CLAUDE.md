@@ -56,6 +56,7 @@ became 2816 tokens.
 - `scripts/verify-deploy.sh` — asserts yaml == conf == live process == `/props` == `/slots`, **makes a real streamed tool call**, and has every slot read `tests/fixtures/img/pelican.png` where a projector is set
 - `scripts/kv-quant-study.sh` — measures what KV quantization costs, and prefill at depth (`--bench`); writes `specs/kv-quant-study.md`. Loads its own model copy, so stop instances first
 - `scripts/bench-agent.sh` — streamed, tool-calling, multi-turn benchmark; gates on correctness
+- `comfyui-mcp/` — the ComfyUI MCP server; deploy installs it in a hash-pinned venv on the target
 - `tests/test-render.sh` — offline suite; no network, no SSH
 - `tests/test-verify-detects-drift.sh` — asserts `make verify` actually goes red on drift
 - `tests/fixtures/agent-session.json` — the recorded session `bench-agent` replays

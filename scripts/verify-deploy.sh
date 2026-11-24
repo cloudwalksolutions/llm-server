@@ -205,12 +205,35 @@ check_comfyui_generates_on_the_gpu() {
 
     file=$(mktemp)
     remote_exec "curl -s '$comfy/view?type=output&filename=$image'" > "$file"
+    assert_real_256_png "smoke generation" "$file"
+    rm -f "$file"
+}
+
+assert_real_256_png() {
+    local label="$1" file="$2" png bytes
     png=$(xxd -p -s 16 -l 8 "$file")
-    [[ "$png" == 0000010000000100 ]] && ok "smoke generation is a 256x256 PNG" \
-        || bad "smoke generation is not a 256x256 PNG (IHDR $png)"
-    local bytes=$(($(wc -c <"$file")))
-    ((bytes > 20000)) && ok "smoke generation has detail ($bytes bytes)" \
-        || bad "smoke generation is $bytes bytes, too small to be a real image"
+    [[ "$png" == 0000010000000100 ]] && ok "$label is a 256x256 PNG" \
+        || bad "$label is not a 256x256 PNG (IHDR $png)"
+    bytes=$(($(wc -c <"$file")))
+    ((bytes > 20000)) && ok "$label has detail ($bytes bytes)" \
+        || bad "$label is $bytes bytes, too small to be a real image"
+}
+
+check_comfyui_mcp_generates() {
+    local mcp="https://${COMFYUI_API_HOST:-}/mcp" code call file
+    [[ -n "${COMFYUI_MCP_KEY:-}" ]] || { bad "COMFYUI_MCP_KEY must be set in the env file"; return; }
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$mcp")
+    assert_eq "MCP without the key" "$code" 401
+
+    call='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"a red apple on a wooden table, studio photo","width":256,"height":256}}}'
+    file=$(mktemp)
+    curl -s --max-time 280 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_MCP_KEY") \
+        -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+        --data "$call" "$mcp" \
+        | sed -n 's/^data: //p' \
+        | jq -r '.result.content[]? | select(.type == "image" and .mimeType == "image/png") | .data' \
+        | base64 -d >"$file" 2>/dev/null
+    assert_real_256_png "MCP generate" "$file"
     rm -f "$file"
 }
 
@@ -220,6 +243,7 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "active"
         check_comfyui_generates_on_the_gpu
         check_comfyui_is_published
+        check_comfyui_mcp_generates
     else
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi

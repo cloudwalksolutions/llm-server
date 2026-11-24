@@ -1,0 +1,19 @@
+[Unit]
+Description=ComfyUI MCP server
+After=comfyui.service
+PartOf=comfyui.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+Environment=COMFYUI_URL=http://127.0.0.1:@COMFYUI_PORT@
+Environment=MCP_PORT=@MCP_PORT@
+ExecStart=@MCP_DIR@/.venv/bin/python @MCP_DIR@/server.py
+Restart=on-failure
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=comfyui-mcp
+
+[Install]
+WantedBy=multi-user.target

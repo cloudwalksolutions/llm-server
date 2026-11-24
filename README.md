@@ -246,6 +246,14 @@ COMFYUI_API_HOST=<api hostname>
 COMFYUI_UI_HOST=<web UI hostname>
 ```
 
+An MCP server for ComfyUI, `comfyui-mcp/`, runs beside it and is published at
+`https://<api hostname>/mcp`, where it takes its own key, so either key can be rotated
+alone. Deploying it needs `uv` on the machine you deploy from.
+
+```bash
+COMFYUI_MCP_KEY=<openssl rand -hex 32>
+```
+
 ## Docs
 
 - `config/llama.example.yaml` — full config schema

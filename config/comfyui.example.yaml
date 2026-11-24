@@ -5,6 +5,7 @@ enabled: true               # false stops and disables it; make deploy converges
 port: 8188                  # published on loopback only
 api_port: 8189              # COMFYUI_API_HOST's tunnel route; refuses a request without COMFYUI_API_KEY
 ui_port: 8190               # COMFYUI_UI_HOST's tunnel route; no key, so gate that hostname with Cloudflare Access
+mcp_port: 8191              # the MCP server, on loopback; reached at COMFYUI_API_HOST/mcp with COMFYUI_MCP_KEY
 container_image: registry.example/amd-strix-halo-comfyui:tag
 dir: /opt/llm/comfyui
 models:                     # each lands at <dir>/models/<dest>, refused unless its sha256 matches

@@ -4,6 +4,10 @@ COMFYUI_TEMPLATES="$(dirname "${BASH_SOURCE[0]}")/../../templates"
 COMFYUI_UNIT_PATH=/etc/systemd/system/comfyui.service
 COMFYUI_PROXY_PATH=/etc/nginx/conf.d/comfyui-proxy.conf
 COMFYUI_KEY_MAP_PATH=/etc/nginx/comfyui-api-key.map
+COMFYUI_MCP_KEY_MAP_PATH=/etc/nginx/comfyui-mcp-key.map
+COMFYUI_MCP_UNIT_PATH=/etc/systemd/system/comfyui-mcp.service
+COMFYUI_MCP_SOURCE="$(dirname "${BASH_SOURCE[0]}")/../../comfyui-mcp"
+COMFYUI_MCP_MANIFEST="find . -path ./.venv -prune -o -type f -print | LC_ALL=C sort | xargs sha256sum"
 
 load_comfyui() {
     COMFYUI_CONFIG="${COMFYUI_CONFIG:-$(dirname "$CONFIG_FILE")/comfyui.yaml}"
@@ -15,12 +19,15 @@ load_comfyui() {
     COMFYUI_PORT=$(yq '.port' "$COMFYUI_CONFIG")
     COMFYUI_API_PORT=$(yq '.api_port' "$COMFYUI_CONFIG")
     COMFYUI_UI_PORT=$(yq '.ui_port' "$COMFYUI_CONFIG")
+    COMFYUI_MCP_PORT=$(yq '.mcp_port' "$COMFYUI_CONFIG")
     COMFYUI_IMAGE=$(yq '.container_image' "$COMFYUI_CONFIG")
     COMFYUI_DIR=$(yq '.dir' "$COMFYUI_CONFIG")
+    COMFYUI_MCP_DIR="$COMFYUI_DIR/mcp"
     _require_enum "comfyui enabled" "$COMFYUI_ENABLED" true false || return 1
     _require_int "comfyui port" "$COMFYUI_PORT" || return 1
     _require_int "comfyui api_port" "$COMFYUI_API_PORT" || return 1
     _require_int "comfyui ui_port" "$COMFYUI_UI_PORT" || return 1
+    _require_int "comfyui mcp_port" "$COMFYUI_MCP_PORT" || return 1
     _require_str "comfyui container_image" "$COMFYUI_IMAGE" || return 1
     _require_no_control_chars "comfyui container_image" "$COMFYUI_IMAGE" || return 1
     _require_safe_path "comfyui dir" "$COMFYUI_DIR" absolute || return 1
@@ -29,7 +36,7 @@ load_comfyui() {
     for n in "${INSTANCE_NAMES[@]}"; do
         taken+="$(_ivalue "$n" port) "
     done
-    for p in "$COMFYUI_PORT" "$COMFYUI_API_PORT" "$COMFYUI_UI_PORT"; do
+    for p in "$COMFYUI_PORT" "$COMFYUI_API_PORT" "$COMFYUI_UI_PORT" "$COMFYUI_MCP_PORT"; do
         [[ "$taken" == *" $p "* ]] && { _cfg_err "comfyui port $p is already taken"; return 1; }
         taken+="$p "
     done
@@ -64,10 +71,30 @@ render_comfyui_unit() {
     printf '%s\n' "$body"
 }
 
+render_comfyui_mcp_unit() {
+    local body
+    body=$(<"$COMFYUI_TEMPLATES/comfyui-mcp.service.in")
+    body="${body//@MCP_DIR@/$COMFYUI_MCP_DIR}"
+    body="${body//@MCP_PORT@/$COMFYUI_MCP_PORT}"
+    body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
+    printf '%s\n' "$body"
+}
+
+stage_comfyui_mcp() {
+    local stage="$1"
+    chmod 755 "$stage"
+    cp "$COMFYUI_MCP_SOURCE/server.py" "$stage/"
+    cp -R "$COMFYUI_MCP_SOURCE/workflows" "$stage/"
+    uv export --quiet --locked --no-header --no-dev --no-emit-project --format requirements-txt \
+        --project "$COMFYUI_MCP_SOURCE" -o "$stage/requirements.txt"
+}
+
 render_comfyui_proxy() {
     local body
     body=$(<"$COMFYUI_TEMPLATES/comfyui-proxy.conf.in")
     body="${body//@KEY_MAP@/$COMFYUI_KEY_MAP_PATH}"
+    body="${body//@MCP_KEY_MAP@/$COMFYUI_MCP_KEY_MAP_PATH}"
+    body="${body//@MCP_PORT@/$COMFYUI_MCP_PORT}"
     body="${body//@API_PORT@/$COMFYUI_API_PORT}"
     body="${body//@UI_PORT@/$COMFYUI_UI_PORT}"
     body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
