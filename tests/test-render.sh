@@ -389,6 +389,14 @@ test_example_config_is_valid() {
     pass "example config is valid and renders every instance"
 }
 
+test_comfyui_example_is_valid() {
+    echo "TEST: config/comfyui.example.yaml loads, with a model from each source"
+    local out
+    out=$(COMFYUI_CONFIG=config/comfyui.example.yaml LLAMA_CONFIG=config/llama.example.yaml "$DEPLOY" --render comfyui 2>&1) \
+        || { fail "comfyui example failed to load: $(sed 's/\x1b\[[0-9;]*m//g' <<<"$out" | head -1)"; return; }
+    pass "comfyui example is valid"
+}
+
 test_example_documents_every_key() {
     echo "TEST: the example documents every key load_instance reads"
     local missing=() k
@@ -819,6 +827,7 @@ else
              test_unit_leaves_per_instance_values_to_systemd \
              test_rejects_flat_legacy_schema \
              test_example_config_is_valid \
+             test_comfyui_example_is_valid \
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \

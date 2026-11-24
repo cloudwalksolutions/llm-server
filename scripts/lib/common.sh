@@ -216,10 +216,14 @@ _load_comfyui() {
     count=$(yq '.models // [] | length' "$COMFYUI_CONFIG")
     for ((i = 0; i < count; i++)); do
         p="comfyui models[$i]"
-        _require_match "$p.repo" "$(yq ".models[$i].repo" "$COMFYUI_CONFIG")" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || return 1
-        _require_match "$p.revision" "$(yq ".models[$i].revision" "$COMFYUI_CONFIG")" '^[0-9a-f]{40}$' || return 1
+        if [[ "$(yq ".models[$i] | has(\"civitai\")" "$COMFYUI_CONFIG")" == true ]]; then
+            _require_int "$p.civitai" "$(yq ".models[$i].civitai" "$COMFYUI_CONFIG")" || return 1
+        else
+            _require_match "$p.repo" "$(yq ".models[$i].repo" "$COMFYUI_CONFIG")" '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || return 1
+            _require_match "$p.revision" "$(yq ".models[$i].revision" "$COMFYUI_CONFIG")" '^[0-9a-f]{40}$' || return 1
+            _require_safe_path "$p.file" "$(yq ".models[$i].file" "$COMFYUI_CONFIG")" relative || return 1
+        fi
         _require_match "$p.sha256" "$(yq ".models[$i].sha256" "$COMFYUI_CONFIG")" '^[0-9a-f]{64}$' || return 1
-        _require_safe_path "$p.file" "$(yq ".models[$i].file" "$COMFYUI_CONFIG")" relative || return 1
         _require_safe_path "$p.dest" "$(yq ".models[$i].dest" "$COMFYUI_CONFIG")" relative || return 1
     done
 }
