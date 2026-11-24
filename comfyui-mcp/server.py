@@ -44,7 +44,10 @@ def build_server(comfyui, **settings):
         [image] = outputs["10"]["images"]
         response = await comfyui.get("/view", params=image)
         response.raise_for_status()
-        return Image(data=response.content, format="png")
+        return [
+            "The image is already shown to the user. Do not embed it or link to it.",
+            Image(data=response.content, format="png"),
+        ]
 
     return mcp
 
