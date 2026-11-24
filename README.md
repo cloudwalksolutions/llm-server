@@ -63,6 +63,11 @@ lives only in `.env`; a `remote:` block in the config is refused.
 `config/llama.yaml` has a `defaults:` block and a per-instance `instances:` block.
 Full schema and commentary: `config/llama.example.yaml`.
 
+llama.cpp decodes WebP images and video by running ffmpeg, which our images do not ship.
+`runtime.ffmpeg` pins a static build by URL and sha256; deploy installs it in `/opt/llm/ffmpeg` and
+mounts it into every instance. Animated WebP needs ffmpeg 9.0 or newer with the full decoder set:
+Fedora's `ffmpeg-free` leaves the animated decoder out.
+
 ```yaml
 defaults:
   cache_type_k: q8_0

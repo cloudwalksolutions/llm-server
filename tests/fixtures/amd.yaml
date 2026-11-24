@@ -4,6 +4,9 @@ runtime:
   gpu: amd
   instances_dir: /opt/llm/instances
   router_map: /etc/llama-router/models.json
+  ffmpeg:
+    url: https://example.invalid/ffmpeg-linux64.tar.xz
+    sha256: 0000000000000000000000000000000000000000000000000000000000000000
 
 defaults:
   kv_unified: false

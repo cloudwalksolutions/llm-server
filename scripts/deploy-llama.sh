@@ -147,6 +147,7 @@ render_unit() {
     body="${body//@SERVER_CMD@/$server_cmd}"
     body="${body//@INSTANCES_DIR@/$INSTANCES_DIR}"
     body="${body//@MODELS_DIR@/$MODELS_DIR}"
+    body="${body//@FFMPEG_DIR@/$FFMPEG_DIR}"
     body="${body//@LIMIT_NOFILE@/$RES_LIMIT_NOFILE}"
     body="${body//@LIMIT_MEMLOCK@/$RES_LIMIT_MEMLOCK}"
 
@@ -322,6 +323,13 @@ else
     echo -e "  ${YELLOW}CHANGED${NC}    $UNIT_PATH"
     diff -u <(printf '%s\n' "$CUR_UNIT") <(printf '%s\n' "$NEW_UNIT") | sed 's/^/      /' || true
 fi
+FFMPEG_CHANGED=0
+if [[ "$(remote_exec "test -x $FFMPEG_DIR/ffmpeg && test -x $FFMPEG_DIR/ffprobe && cat $FFMPEG_DIR/.sha256" 2>/dev/null || true)" == "$FFMPEG_SHA256" ]]; then
+    echo -e "  ${GREEN}unchanged${NC}  $FFMPEG_DIR"
+else
+    FFMPEG_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $FFMPEG_DIR ($FFMPEG_URL)"
+fi
 for name in "${INSTANCE_NAMES[@]}"; do
     key=$(remote_conf_value "$INSTANCES_DIR/${EXISTING_INSTANCES[0]}.conf" LLAMA_API_KEY)
     [[ " ${NEW_INSTANCES[*]} " == *" $name "* ]] \
@@ -495,13 +503,14 @@ if [[ "$CUR_TUNNEL" != "$NEW_TUNNEL" ]]; then
     diff -u <(printf '%s\n' "$CUR_TUNNEL") <(printf '%s\n' "$NEW_TUNNEL") | sed 's/^/      /' || true
 fi
 
-if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED && ! COMFYUI_CHANGED && ! PROXY_CHANGED && ! TUNNEL_CHANGED)); then
+if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! FFMPEG_CHANGED && ! ROUTER_CHANGED && ! COMFYUI_CHANGED && ! PROXY_CHANGED && ! TUNNEL_CHANGED)); then
     echo -e "\n${GREEN}Nothing to do — target already matches config.${NC}"
     exit 0
 fi
 
 if [[ "$MODE" == "dry-run" ]]; then
     echo ""
+    ((FFMPEG_CHANGED)) && echo -e "${YELLOW}DRY RUN — would download, check and install ffmpeg in $FFMPEG_DIR${NC}"
     ((UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $UNIT_PATH + daemon-reload${NC}"
     ((${#CHANGED[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would rewrite confs: ${CHANGED[*]}${NC}"
     ((${#NEW_INSTANCES[@]} > 0)) && echo -e "${YELLOW}DRY RUN — would add routes for: ${NEW_INSTANCES[*]}${NC}"
@@ -579,6 +588,23 @@ replace_remote_file() {
         printf '%s\n' "$content" | remote_write_sudo "$path" "$mode"
     fi
 }
+
+if ((FFMPEG_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Installing ffmpeg in $FFMPEG_DIR"
+    stage="$FFMPEG_DIR.staging"
+    remote_exec_sudo "rm -rf $stage && mkdir -p $stage && curl -fsSL -o $stage/ffmpeg.tar.xz $(_shq "$FFMPEG_URL")"
+    actual=$(remote_exec "sha256sum $stage/ffmpeg.tar.xz" | cut -d' ' -f1)
+    if [[ "$actual" != "$FFMPEG_SHA256" ]]; then
+        remote_exec_sudo "rm -rf $stage"
+        echo -e "${RED}ffmpeg sha256 mismatch: got $actual, want $FFMPEG_SHA256. Not using it.${NC}" >&2
+        false
+    fi
+    remote_exec_sudo "tar -xJf $stage/ffmpeg.tar.xz -C $stage --strip-components=2 --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' \
+        && rm $stage/ffmpeg.tar.xz && chown -R root:root $stage && echo $FFMPEG_SHA256 > $stage/.sha256 \
+        && rm -rf $FFMPEG_DIR.previous && { [ ! -e $FFMPEG_DIR ] || mv $FFMPEG_DIR $FFMPEG_DIR.previous; } && mv $stage $FFMPEG_DIR"
+    rb "rm -rf $FFMPEG_DIR && { [ ! -e $FFMPEG_DIR.previous ] || mv $FFMPEG_DIR.previous $FFMPEG_DIR; }"
+    echo -e "  ${GREEN}downloaded + sha256 verified + installed${NC}"
+fi
 
 if ((UNIT_CHANGED)); then
     echo -e "${CYAN}[6/7]${NC} Installing $UNIT_PATH"

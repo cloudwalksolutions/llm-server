@@ -286,6 +286,10 @@ test_rejects_configs_that_break_the_target() {
     # Renders CONTAINER_IMAGE=null, which podman reports as an opaque error.
     expect_reject "missing container_image" 'del(.defaults.container_image)'
 
+    # llama.cpp decodes WebP and video only through this ffmpeg.
+    expect_reject "missing runtime.ffmpeg" 'del(.runtime.ffmpeg)'
+    expect_reject "ffmpeg without a sha256" '.runtime.ffmpeg.sha256 = "latest"'
+
     # One instance wins the bind; the other crash-loops. The router-map check
     # only compares each name against its own port, so nothing else sees this.
     expect_reject "two instances on one port" '.instances.overridden.port = 8082'
@@ -675,6 +679,15 @@ test_unit_drafts_with_the_current_speculative_flags() {
     pass "speculative decoding uses the current flags"
 }
 
+test_unit_decodes_media_with_the_pinned_ffmpeg() {
+    echo "TEST: llama-server runs the pinned ffmpeg, mounted read-only, to decode WebP and video"
+    local unit
+    unit=$(render_unit amd)
+    grep -q -- '-v /opt/llm/ffmpeg:/opt/ffmpeg:ro' <<<"$unit" || { fail "unit does not mount the ffmpeg dir read-only"; return; }
+    grep -q -- '--video-ffmpeg-dir /opt/ffmpeg' <<<"$unit" || { fail "unit does not point llama-server at it"; return; }
+    pass "ffmpeg mounted and passed"
+}
+
 test_unit_gives_flash_attention_a_value() {
     echo "TEST: flash_attn: true renders -fa on"
     local unit
@@ -851,6 +864,7 @@ else
              test_long_session_hides_each_fact_at_its_depth \
              test_unit_loads_models_without_mmap_by_its_current_name \
              test_unit_gives_flash_attention_a_value \
+             test_unit_decodes_media_with_the_pinned_ffmpeg \
              test_unit_drafts_with_the_current_speculative_flags \
              test_router_map_gains_a_new_instance_and_keeps_the_rest \
              test_a_new_file_takes_its_directorys_owner \
