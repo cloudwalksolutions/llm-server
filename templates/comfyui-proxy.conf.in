@@ -1,0 +1,44 @@
+map $http_authorization $comfyui_key_ok {
+    default 0;
+    include @KEY_MAP@;
+}
+
+map $http_upgrade $comfyui_connection {
+    default upgrade;
+    '' '';
+}
+
+server {
+    listen 127.0.0.1:@API_PORT@;
+    client_max_body_size 64M;
+
+    location / {
+        if ($comfyui_key_ok = 0) {
+            return 401;
+        }
+        proxy_pass http://127.0.0.1:@COMFYUI_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $comfyui_connection;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}
+
+server {
+    listen 127.0.0.1:@UI_PORT@;
+    client_max_body_size 64M;
+
+    location / {
+        proxy_pass http://127.0.0.1:@COMFYUI_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $comfyui_connection;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}

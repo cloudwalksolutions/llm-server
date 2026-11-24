@@ -1,5 +1,7 @@
 enabled: true
 port: 8188
+api_port: 8189
+ui_port: 8190
 container_image: example.invalid/comfyui:test
 dir: /opt/llm/comfyui
 models:

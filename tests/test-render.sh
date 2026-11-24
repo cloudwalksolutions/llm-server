@@ -704,6 +704,17 @@ test_comfyui_is_published_on_loopback_only() {
     pass "loopback only"
 }
 
+test_tunnel_routes_each_hostname_then_refuses_the_rest() {
+    echo "TEST: the tunnel routes each hostname to its local service, and 404s anything else"
+    local cfg
+    cfg=$(render_tunnel_config TUNNEL-ID /etc/cloudflared/TUNNEL-ID.json \
+        llm.example=http://localhost:8080 comfyui-api.example=http://127.0.0.1:8189)
+    [[ "$(yq '.tunnel' <<<"$cfg")" == TUNNEL-ID ]] || { fail "tunnel id lost: $cfg"; return; }
+    [[ "$(yq -o=json -I=0 '.ingress' <<<"$cfg")" == '[{"hostname":"llm.example","service":"http://localhost:8080"},{"hostname":"comfyui-api.example","service":"http://127.0.0.1:8189"},{"service":"http_status:404"}]' ]] \
+        || { fail "ingress is $(yq -o=json -I=0 '.ingress' <<<"$cfg")"; return; }
+    pass "every hostname routed, the rest refused"
+}
+
 test_a_disabled_instance_is_not_deployed() {
     echo "TEST: an instance with enabled: false is left out of the deploy"
     local cfg
@@ -846,6 +857,7 @@ else
              test_router_has_a_backend_for_every_instance \
              test_comfyui_is_published_on_loopback_only \
              test_a_disabled_instance_is_not_deployed \
+             test_tunnel_routes_each_hostname_then_refuses_the_rest \
              test_router_map_points_default_at_the_configured_instance \
              test_router_map_drops_a_retired_instance_and_keeps_the_rest; do
         "$t"

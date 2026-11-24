@@ -169,6 +169,19 @@ mem_available=$(remote_exec "awk '/^MemAvailable/ {printf \"%d\", \$2/1048576}' 
     || bad "MemAvailable is ${mem_available} GiB, want at least $MEM_AVAILABLE_FLOOR_GIB"
 echo ""
 
+check_comfyui_is_published() {
+    local code
+    [[ -n "${COMFYUI_API_HOST:-}" && -n "${COMFYUI_API_KEY:-}" ]] \
+        || { bad "COMFYUI_API_HOST and COMFYUI_API_KEY must be set in the env file"; return; }
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$COMFYUI_API_HOST/system_stats")
+    assert_eq "ComfyUI API without the key" "$code" 401
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_API_KEY") \
+        "https://$COMFYUI_API_HOST/system_stats")
+    assert_eq "ComfyUI API with the key" "$code" 200
+    code=$(remote_exec "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$COMFYUI_UI_PORT/" 2>/dev/null)
+    assert_eq "ComfyUI web UI behind Access" "$code" 200
+}
+
 check_comfyui_generates_on_the_gpu() {
     local comfy="http://127.0.0.1:$COMFYUI_PORT" device id start image file png
     device=$(remote_exec "curl -s $comfy/system_stats" | jq -r '.devices[0].type // "none"')
@@ -206,6 +219,7 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
     if [[ "$COMFYUI_ENABLED" == true ]]; then
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "active"
         check_comfyui_generates_on_the_gpu
+        check_comfyui_is_published
     else
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi
