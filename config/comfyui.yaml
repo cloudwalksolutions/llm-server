@@ -1,5 +1,7 @@
 enabled: true
 port: 8188
+api_port: 8189
+ui_port: 8190
 container_image: us-east1-docker.pkg.dev/on-prem-cw-admin-project/llm-images/amd-strix-halo-comfyui:20260811-102353
 dir: /opt/llm/comfyui
 models:

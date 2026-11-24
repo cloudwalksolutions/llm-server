@@ -236,6 +236,16 @@ make deploy
 make verify           # includes a real generation while ComfyUI is enabled
 ```
 
+`make deploy` also owns the tunnel's routes in `/etc/cloudflared/config.yml`. With
+these in `.env`, it publishes ComfyUI's API, which refuses a request without the key,
+and its web UI, which has no key and must be gated by Cloudflare Access:
+
+```bash
+COMFYUI_API_KEY=<openssl rand -hex 32>
+COMFYUI_API_HOST=<api hostname>
+COMFYUI_UI_HOST=<web UI hostname>
+```
+
 ## Docs
 
 - `config/llama.example.yaml` — full config schema

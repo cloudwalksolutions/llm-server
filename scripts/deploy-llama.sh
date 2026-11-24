@@ -159,19 +159,6 @@ render_unit() {
     printf '%s\n' "$body"
 }
 
-COMFYUI_TEMPLATE="$SCRIPT_DIR/../templates/comfyui.service.in"
-COMFYUI_UNIT_PATH=/etc/systemd/system/comfyui.service
-
-render_comfyui_unit() {
-    local body
-    body=$(<"$COMFYUI_TEMPLATE")
-    body="${body//@ENGINE_BIN@//usr/bin/$RUNTIME_ENGINE}"
-    body="${body//@COMFYUI_DIR@/$COMFYUI_DIR}"
-    body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
-    body="${body//@COMFYUI_IMAGE@/$COMFYUI_IMAGE}"
-    printf '%s\n' "$body"
-}
-
 if [[ "$MODE" == "render" ]]; then
     [[ -n "$RENDER_ONE" ]] || { echo "--render needs an instance name" >&2; exit 2; }
     if [[ "$RENDER_ONE" == "--unit" || "$RENDER_ONE" == "unit" ]]; then
@@ -417,7 +404,50 @@ fi
 ((COMFYUI_STOP)) && echo -e "  ${YELLOW}STOP${NC}       comfyui (disabled or not configured)"
 COMFYUI_CHANGED=$((COMFYUI_UNIT_CHANGED || COMFYUI_START || COMFYUI_STOP))
 
-if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED && ! COMFYUI_CHANGED)); then
+NEW_PROXY=""
+NEW_KEY_MAP=""
+if [[ "$COMFYUI_CONFIGURED" == true ]]; then
+    [[ "${COMFYUI_API_KEY:-}" =~ ^[A-Za-z0-9_-]{32,}$ ]] \
+        || { _cfg_err "COMFYUI_API_KEY in the env file must be 32 or more letters, digits, - or _"; exit 1; }
+    NEW_PROXY=$(render_comfyui_proxy)
+    NEW_KEY_MAP=$(render_comfyui_key_map "$COMFYUI_API_KEY")
+fi
+CUR_PROXY=$(remote_exec "cat $COMFYUI_PROXY_PATH 2>/dev/null" || echo "")
+CUR_KEY_MAP=$(remote_exec_sudo "cat $COMFYUI_KEY_MAP_PATH 2>/dev/null" || echo "")
+PROXY_CHANGED=0
+if [[ "$CUR_PROXY" != "$NEW_PROXY" ]]; then
+    PROXY_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_PROXY_PATH"
+    diff -u <(printf '%s\n' "$CUR_PROXY") <(printf '%s\n' "$NEW_PROXY") | sed 's/^/      /' || true
+fi
+if [[ "$CUR_KEY_MAP" != "$NEW_KEY_MAP" ]]; then
+    PROXY_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_KEY_MAP_PATH (the key is not shown)"
+fi
+if [[ -n "$NEW_PROXY" ]] && ! comfyui_proxy_listening; then
+    PROXY_CHANGED=1
+    echo -e "  ${YELLOW}NOT LISTENING${NC} ComfyUI's proxy on $COMFYUI_API_PORT and $COMFYUI_UI_PORT"
+fi
+
+CUR_TUNNEL=$(remote_exec "cat $TUNNEL_CONFIG 2>/dev/null" || echo "")
+NEW_TUNNEL="$CUR_TUNNEL"
+if [[ -n "$CUR_TUNNEL" ]]; then
+    _require_host LLM_HOST || exit 1
+    routes=("$LLM_HOST=http://localhost:8080")
+    if [[ "$COMFYUI_ENABLED" == true && -n "${COMFYUI_API_HOST:-}${COMFYUI_UI_HOST:-}" ]]; then
+        _require_host COMFYUI_API_HOST && _require_host COMFYUI_UI_HOST || exit 1
+        routes+=("$COMFYUI_API_HOST=http://127.0.0.1:$COMFYUI_API_PORT" "$COMFYUI_UI_HOST=http://127.0.0.1:$COMFYUI_UI_PORT")
+    fi
+    NEW_TUNNEL=$(render_tunnel_config "$(yq '.tunnel' <<<"$CUR_TUNNEL")" "$(yq '."credentials-file"' <<<"$CUR_TUNNEL")" "${routes[@]}")
+fi
+TUNNEL_CHANGED=0
+if [[ "$CUR_TUNNEL" != "$NEW_TUNNEL" ]]; then
+    TUNNEL_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $TUNNEL_CONFIG"
+    diff -u <(printf '%s\n' "$CUR_TUNNEL") <(printf '%s\n' "$NEW_TUNNEL") | sed 's/^/      /' || true
+fi
+
+if ((${#RESTART[@]} == 0 && ${#RETIRED_INSTANCES[@]} == 0 && ! ROUTER_CHANGED && ! COMFYUI_CHANGED && ! PROXY_CHANGED && ! TUNNEL_CHANGED)); then
     echo -e "\n${GREEN}Nothing to do — target already matches config.${NC}"
     exit 0
 fi
@@ -433,6 +463,8 @@ if [[ "$MODE" == "dry-run" ]]; then
     ((COMFYUI_UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_UNIT_PATH + daemon-reload${NC}"
     ((COMFYUI_STOP)) && echo -e "${YELLOW}DRY RUN — would stop and disable comfyui before any instance starts${NC}"
     ((COMFYUI_START)) && echo -e "${YELLOW}DRY RUN — would enable and (re)start comfyui after the instances${NC}"
+    ((PROXY_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite ComfyUI's proxy, nginx -t and reload nginx${NC}"
+    ((TUNNEL_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $TUNNEL_CONFIG and restart cloudflared${NC}"
     echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]:-nothing}${NC}"
     echo -e "${YELLOW}Run 'make deploy' to apply${NC}"
     exit 0
@@ -605,6 +637,41 @@ if ((COMFYUI_START)); then
         sleep 5
     done
     echo -e " ${GREEN}up${NC}"
+fi
+
+replace_remote_file() {
+    local path="$1" mode="$2" undo="$3" content="$4"
+    if remote_exec_sudo "test -e $path"; then
+        remote_exec_sudo "cp -p $path $path.backup.$TIMESTAMP"
+        rb "cp -p $path.backup.$TIMESTAMP $path && $undo"
+    else
+        rb "rm -f $path && $undo"
+    fi
+    if [[ -z "$content" ]]; then
+        remote_exec_sudo "rm -f $path"
+    else
+        printf '%s\n' "$content" | remote_write_sudo "$path" "$mode"
+    fi
+}
+
+if ((PROXY_CHANGED)); then
+    echo -e "${CYAN}[7/7]${NC} Updating ComfyUI's proxy"
+    replace_remote_file "$COMFYUI_KEY_MAP_PATH" 600 "systemctl reload nginx" "$NEW_KEY_MAP"
+    replace_remote_file "$COMFYUI_PROXY_PATH" 644 "systemctl reload nginx" "$NEW_PROXY"
+    [[ -n "$NEW_PROXY" ]] && allow_nginx_ports "$COMFYUI_API_PORT" "$COMFYUI_UI_PORT"
+    remote_exec_sudo "nginx -t -q && systemctl reload nginx"
+    if [[ -n "$NEW_PROXY" ]]; then
+        sleep 2
+        comfyui_proxy_listening || { echo -e "${RED}nginx reloaded but is not listening on $COMFYUI_API_PORT and $COMFYUI_UI_PORT; see /var/log/nginx/error.log${NC}" >&2; false; }
+    fi
+    echo -e "  ${GREEN}written + nginx -t + reloaded + listening${NC}"
+fi
+
+if ((TUNNEL_CHANGED)); then
+    echo -e "${CYAN}[7/7]${NC} Updating the tunnel's routes"
+    replace_remote_file "$TUNNEL_CONFIG" 644 "systemctl restart cloudflared" "$NEW_TUNNEL"
+    remote_exec_sudo "cloudflared tunnel --config $TUNNEL_CONFIG ingress validate && systemctl restart cloudflared && sleep 3 && systemctl is-active --quiet cloudflared"
+    echo -e "  ${GREEN}validated + cloudflared restarted${NC}"
 fi
 
 trap - ERR

@@ -15,5 +15,7 @@ source "$_LIB/remote.sh"
 source "$_LIB/live.sh"
 # shellcheck source=router.sh
 source "$_LIB/router.sh"
+# shellcheck source=tunnel.sh
+source "$_LIB/tunnel.sh"
 # shellcheck source=bench.sh
 source "$_LIB/bench.sh"
