@@ -133,6 +133,8 @@ async def test_a_clip_still_running_returns_its_job_which_get_job_returns_when_d
     done = False
 
     def comfyui(request):
+        if request.url.path == "/queue":
+            return httpx.Response(200, json={"queue_running": [[0, "v1", {}, {}, ["9"]]], "queue_pending": []})
         if request.url.path == "/history/v1" and not done:
             return httpx.Response(200, json={})
         return finished_clip(request)
@@ -141,7 +143,23 @@ async def test_a_clip_still_running_returns_its_job_which_get_job_returns_when_d
     assert not started.isError
     assert "v1" in started.content[0].text
 
+    rendering = await call(fake_comfyui(comfyui), "get_job", {"job_id": "v1"}, wait=0)
+    assert not rendering.isError
+    assert "still rendering" in rendering.content[0].text
+
     done = True
     result = await call(fake_comfyui(comfyui), "get_job", {"job_id": "v1"}, wait=0)
 
     assert result.content[1].mimeType == "image/webp"
+
+
+async def test_a_job_comfyui_never_ran_is_refused_so_the_model_starts_one_with_video():
+    def comfyui(request):
+        if request.url.path == "/queue":
+            return httpx.Response(200, json={"queue_running": [], "queue_pending": []})
+        return httpx.Response(200, json={})
+
+    result = await call(fake_comfyui(comfyui), "get_job", {"job_id": "made-up"}, wait=0)
+
+    assert result.isError
+    assert "video" in result.content[0].text
