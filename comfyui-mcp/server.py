@@ -5,14 +5,15 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP, Image
 from pydantic import Field
 
 WORKFLOW = Path(__file__).parent / "workflows" / "z-image-turbo.api.json"
-VIDEO_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-ti2v-5b.api.json"
+VIDEO_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-t2v-14b.api.json"
+VIDEO_SIZES = {"480p": (832, 480), "720p": (1280, 720)}
 SHOWN = "It is already shown to the user. Do not embed it or link to it."
 
 Side = Annotated[int, Field(ge=256, le=2048, multiple_of=16)]
@@ -75,12 +76,14 @@ def build_server(comfyui, wait=240, **settings):
     async def video(
         prompt: str,
         seconds: Annotated[int, Field(ge=1, le=5)] = 2,
+        resolution: Literal["480p", "720p"] = "480p",
     ):
-        """Make a video: generate a short silent 1280x704 clip from a text prompt. Takes about four minutes per second of video. Returns the clip, or a job_id for get_job if it is still rendering."""
+        """Make a video: generate a short silent clip from a text prompt, at 832x480, which takes about two minutes per second of video, or, only when asked, 1280x720, which takes much longer. Returns the clip, or a job_id for get_job if it is still rendering."""
+        width, height = VIDEO_SIZES[resolution]
         workflow = json.loads(VIDEO_WORKFLOW.read_text())
         workflow["5"]["inputs"]["text"] = prompt
-        workflow["7"]["inputs"]["length"] = 24 * seconds + 1
-        workflow["8"]["inputs"]["seed"] = random.randrange(2**32)
+        workflow["7"]["inputs"].update(width=width, height=height, length=24 * seconds + 1)
+        workflow["8"]["inputs"]["noise_seed"] = random.randrange(2**32)
         return await clip_or_pending(await submit(comfyui, workflow))
 
     @mcp.tool()

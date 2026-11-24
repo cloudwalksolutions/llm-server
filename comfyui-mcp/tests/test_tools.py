@@ -93,6 +93,17 @@ async def test_a_video_longer_than_the_bounds_is_refused():
     assert submitted == []
 
 
+async def test_a_resolution_wan_was_not_trained_at_is_refused():
+    submitted = []
+    comfyui = fake_comfyui(lambda request: submitted.append(request) or httpx.Response(500))
+
+    result = await call(comfyui, "video", {"prompt": "waves", "resolution": "4k"})
+
+    assert result.isError
+    assert "resolution" in result.content[0].text
+    assert submitted == []
+
+
 WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8X animated"
 
 
@@ -119,9 +130,11 @@ async def test_a_clip_finished_within_the_wait_is_returned_as_an_animated_webp()
         return finished_clip(request)
 
     result = await call(fake_comfyui(comfyui), "video", {"prompt": "waves", "width": 256, "height": 256})
+    await call(fake_comfyui(comfyui), "video", {"prompt": "waves", "resolution": "720p"})
 
-    [latent] = [node["inputs"] for node in submitted[0].values() if node["class_type"] == "Wan22ImageToVideoLatent"]
-    assert (latent["width"], latent["height"]) == (1280, 704)
+    sizes = [(node["inputs"]["width"], node["inputs"]["height"])
+             for workflow in submitted for node in workflow.values() if node["class_type"] == "EmptyHunyuanLatentVideo"]
+    assert sizes == [(832, 480), (1280, 720)]
     assert not result.isError
     [note, clip] = result.content
     assert "already shown to the user" in note.text
