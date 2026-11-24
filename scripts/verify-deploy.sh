@@ -220,20 +220,46 @@ assert_real_256_png() {
 }
 
 check_comfyui_mcp_generates() {
-    local mcp="https://${COMFYUI_API_HOST:-}/mcp" code call file
+    local mcp="https://${COMFYUI_API_HOST:-}/mcp" code file
     [[ -n "${COMFYUI_MCP_KEY:-}" ]] || { bad "COMFYUI_MCP_KEY must be set in the env file"; return; }
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$mcp")
     assert_eq "MCP without the key" "$code" 401
 
-    call='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"a red apple on a wooden table, studio photo","width":256,"height":256}}}'
     file=$(mktemp)
-    curl -s --max-time 280 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_MCP_KEY") \
-        -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-        --data "$call" "$mcp" \
-        | sed -n 's/^data: //p' \
-        | jq -r '.result.content[]? | select(.type == "image" and .mimeType == "image/png") | .data' \
+    mcp_call generate '{"prompt":"a red apple on a wooden table, studio photo","width":256,"height":256}' \
+        | jq -r '.content[]? | select(.type == "image" and .mimeType == "image/png") | .data' \
         | base64 -d >"$file" 2>/dev/null
     assert_real_256_png "MCP generate" "$file"
+    rm -f "$file"
+}
+
+mcp_call() {
+    local tool="$1" arguments="$2"
+    jq -nc --arg t "$tool" --argjson a "$arguments" '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: $t, arguments: $a}}' \
+        | curl -s --max-time 290 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_MCP_KEY") \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            --data @- "https://$COMFYUI_API_HOST/mcp" \
+        | sed -n 's/^data: //p' | jq -c '.result // .error'
+}
+
+check_comfyui_mcp_makes_video() {
+    local result job start file bytes
+    start=$(date +%s)
+    result=$(mcp_call video '{"prompt":"ocean waves rolling onto a sandy beach","seconds":1}')
+    while job=$(jq -r '.content[0].text // "" | capture("job_id \"(?<id>[^\"]+)\"").id // empty' <<<"$result") && [[ -n "$job" ]]; do
+        (($(date +%s) - start < 1200)) || { bad "MCP video did not finish in 1200s"; return; }
+        result=$(mcp_call get_job "$(jq -nc --arg j "$job" '{job_id: $j}')")
+    done
+    file=$(mktemp)
+    jq -r '.content[]? | select(.type == "image" and .mimeType == "image/webp") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
+    if [[ "$(head -c 4 "$file")" == RIFF && "$(head -c 12 "$file" | tail -c 4)" == WEBP ]] && grep -q ANIM "$file"; then
+        ok "MCP video is an animated WebP, made in $(($(date +%s) - start))s"
+    else
+        bad "MCP video is not an animated WebP: $(head -c 200 <<<"$result")"
+    fi
+    bytes=$(($(wc -c <"$file")))
+    ((bytes > 20000)) && ok "MCP video has detail ($bytes bytes)" \
+        || bad "MCP video is $bytes bytes, too small to be a real clip"
     rm -f "$file"
 }
 
@@ -244,6 +270,7 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
         check_comfyui_generates_on_the_gpu
         check_comfyui_is_published
         check_comfyui_mcp_generates
+        check_comfyui_mcp_makes_video
     else
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi
