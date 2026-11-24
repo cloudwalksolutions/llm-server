@@ -94,12 +94,12 @@ assert_streamed_tool_call() {
 # Only a working vision path can name the word in the picture, and it has to do
 # so through a tool call, the shape a client uses.
 assert_image_seen() {
-    local name="$1" port="$2" key="$3" label="${4:-image read}" body out word
-    body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" \
-        --arg img "data:image/png;base64,$(base64 < tests/fixtures/img/pelican.png | tr -d '\n')" '{
+    local name="$1" port="$2" key="$3" label="$4" image="$5" question="$6" want="$7" body out word
+    body=$(jq -nc --arg m "$name" --argjson mt "$((INST_REASONING_BUDGET + 256))" --arg q "$question" \
+        --rawfile b64 <(base64 < "$image" | tr -d '\n') '("data:image/png;base64," + $b64) as $img | {
         model: $m, max_tokens: $mt, tool_choice: "required",
         messages: [{role: "user", content: [
-            {type: "text", text: "Record the single word written in this image."},
+            {type: "text", text: $q},
             {type: "image_url", image_url: {url: $img}}]}],
         tools: [{type: "function", function: {
             name: "record_word",
@@ -109,10 +109,10 @@ assert_image_seen() {
         -H 'Content-Type: application/json' --data-binary @- \
         http://127.0.0.1:$port/v1/chat/completions" 2>/dev/null || echo "")
     word=$(jq -r '.choices[0].message.tool_calls[0].function.arguments | fromjson | .word' <<<"$out" 2>/dev/null)
-    if [[ "${word^^}" == "PELICAN" ]]; then
-        ok "$label: the model read \"$word\" through a tool call"
+    if [[ "${word^^}" =~ ^($want)$ ]]; then
+        ok "$label: the model saw \"$word\" through a tool call"
     else
-        bad "$label: want PELICAN, got [${word:-$(jq -c '.error // .choices[0].message' <<<"$out" 2>/dev/null | head -c 200)}]"
+        bad "$label: want $want, got [${word:-$(jq -c '.error // .choices[0].message' <<<"$out" 2>/dev/null | head -c 200)}]"
     fi
 }
 
@@ -188,25 +188,45 @@ check_comfyui_generates_on_the_gpu() {
     [[ "$device" != cpu && "$device" != none ]] && ok "ComfyUI runs on $device" \
         || bad "ComfyUI runs on $device, want a GPU"
 
-    id=$(jq -c '{prompt: .}' tests/fixtures/comfyui/smoke.api.json \
+    file=$(mktemp)
+    comfyui_render "smoke generation" "$(<tests/fixtures/comfyui/smoke.api.json)" "$file" \
+        && assert_real_256_png "smoke generation" "$file"
+    rm -f "$file"
+}
+
+comfyui_render() {
+    local label="$1" workflow="$2" out="$3" comfy="http://127.0.0.1:$COMFYUI_PORT" id entry error image start
+    id=$(jq -c '{prompt: .}' <<<"$workflow" \
         | remote_exec "curl -s -H 'Content-Type: application/json' --data-binary @- $comfy/prompt" \
         | jq -r '.prompt_id // empty')
-    [[ -n "$id" ]] || { bad "ComfyUI refused the smoke workflow"; return; }
-
-    local entry error
+    [[ -n "$id" ]] || { bad "ComfyUI refused the $label workflow"; return 1; }
     start=$(date +%s)
     until entry=$(remote_exec "curl -s $comfy/history/$id" | jq -c --arg id "$id" '.[$id] // empty') && [[ -n "$entry" ]]; do
-        (($(date +%s) - start < 600)) || { bad "smoke generation did not finish in 600s"; return; }
+        (($(date +%s) - start < 600)) || { bad "$label did not finish in 600s"; return 1; }
         sleep 3
     done
     error=$(jq -r '.status.messages[]? | select(.[0] == "execution_error") | .[1].exception_message' <<<"$entry")
-    [[ -z "$error" ]] || { bad "smoke generation failed: $error"; return; }
+    [[ -z "$error" ]] || { bad "$label failed: $error"; return 1; }
     image=$(jq -r '[.outputs[].images[]?.filename] | first // empty' <<<"$entry")
+    remote_exec "curl -s '$comfy/view?type=output&filename=$image'" >"$out"
+}
 
-    file=$(mktemp)
-    remote_exec "curl -s '$comfy/view?type=output&filename=$image'" > "$file"
-    assert_real_256_png "smoke generation" "$file"
-    rm -f "$file"
+assert_router_model_sees() {
+    local label="$1" image="$2" question="$3" want="$4" key
+    load_instance "$ROUTER_DEFAULT" || { bad "$label: no router default to look with"; return; }
+    key=$(remote_conf_value "$INSTANCES_DIR/$ROUTER_DEFAULT.conf" LLAMA_API_KEY)
+    assert_image_seen "$ROUTER_DEFAULT" "$INST_PORT" "$key" "$label" "$image" "$question" "$want"
+}
+
+middle_frame() {
+    local clip="$1" out="$2" name
+    name=$(remote_exec "cat > /tmp/verify-clip.webp && curl -s -F image=@/tmp/verify-clip.webp -F overwrite=true http://127.0.0.1:$COMFYUI_PORT/upload/image" <"$clip" \
+        | jq -r '.name // empty')
+    [[ -n "$name" ]] || { bad "ComfyUI refused the clip upload"; return 1; }
+    comfyui_render "frame extraction" "$(jq -nc --arg n "$name" '{
+        "1": {class_type: "LoadImage", inputs: {image: $n}},
+        "2": {class_type: "ImageFromBatch", inputs: {image: ["1", 0], batch_index: 12, length: 1}},
+        "3": {class_type: "SaveImage", inputs: {images: ["2", 0], filename_prefix: "verify-frame"}}}')" "$out"
 }
 
 assert_real_256_png() {
@@ -220,21 +240,53 @@ assert_real_256_png() {
 }
 
 check_comfyui_mcp_generates() {
-    local mcp="https://${COMFYUI_API_HOST:-}/mcp" code call file
+    local mcp="https://${COMFYUI_API_HOST:-}/mcp" code file
     [[ -n "${COMFYUI_MCP_KEY:-}" ]] || { bad "COMFYUI_MCP_KEY must be set in the env file"; return; }
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$mcp")
     assert_eq "MCP without the key" "$code" 401
 
-    call='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"generate","arguments":{"prompt":"a red apple on a wooden table, studio photo","width":256,"height":256}}}'
     file=$(mktemp)
-    curl -s --max-time 280 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_MCP_KEY") \
-        -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-        --data "$call" "$mcp" \
-        | sed -n 's/^data: //p' \
-        | jq -r '.result.content[]? | select(.type == "image" and .mimeType == "image/png") | .data' \
+    mcp_call generate '{"prompt":"a red apple on a wooden table, studio photo","width":256,"height":256}' \
+        | jq -r '.content[]? | select(.type == "image" and .mimeType == "image/png") | .data' \
         | base64 -d >"$file" 2>/dev/null
     assert_real_256_png "MCP generate" "$file"
+    assert_router_model_sees "MCP generate shows its prompt" "$file" \
+        "Record in one word the main object in this picture." 'APPLES?'
     rm -f "$file"
+}
+
+mcp_call() {
+    local tool="$1" arguments="$2"
+    jq -nc --arg t "$tool" --argjson a "$arguments" '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: $t, arguments: $a}}' \
+        | curl -s --max-time 290 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_MCP_KEY") \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            --data @- "https://$COMFYUI_API_HOST/mcp" \
+        | sed -n 's/^data: //p' | jq -c '.result // .error'
+}
+
+check_comfyui_mcp_makes_video() {
+    local result job start file bytes frame
+    start=$(date +%s)
+    result=$(mcp_call video '{"prompt":"ocean waves rolling onto a sandy beach","seconds":1}')
+    while job=$(jq -r '.content[0].text // "" | capture("job_id \"(?<id>[^\"]+)\"").id // empty' <<<"$result") && [[ -n "$job" ]]; do
+        (($(date +%s) - start < 1200)) || { bad "MCP video did not finish in 1200s"; return; }
+        result=$(mcp_call get_job "$(jq -nc --arg j "$job" '{job_id: $j}')")
+    done
+    file=$(mktemp)
+    jq -r '.content[]? | select(.type == "image" and .mimeType == "image/webp") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
+    if [[ "$(head -c 4 "$file")" == RIFF && "$(head -c 12 "$file" | tail -c 4)" == WEBP ]] && grep -q ANIM "$file"; then
+        ok "MCP video is an animated WebP, made in $(($(date +%s) - start))s"
+    else
+        bad "MCP video is not an animated WebP: $(head -c 200 <<<"$result")"
+    fi
+    bytes=$(($(wc -c <"$file")))
+    ((bytes > 20000)) && ok "MCP video has detail ($bytes bytes)" \
+        || bad "MCP video is $bytes bytes, too small to be a real clip"
+    frame=$(mktemp)
+    middle_frame "$file" "$frame" \
+        && assert_router_model_sees "MCP video shows its prompt" "$frame" \
+            "Record in one word what this scene shows." 'BEACH|OCEAN|SEA|WAVES?|SHORE|COAST|SURF|SAND'
+    rm -f "$file" "$frame"
 }
 
 if [[ "$COMFYUI_CONFIGURED" == true ]]; then
@@ -244,6 +296,7 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
         check_comfyui_generates_on_the_gpu
         check_comfyui_is_published
         check_comfyui_mcp_generates
+        check_comfyui_mcp_makes_video
     else
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi
@@ -342,7 +395,8 @@ for name in "${INSTANCE_NAMES[@]}"; do
     if [[ -n "$INST_MMPROJ_FILE" ]]; then
         tmp=$(mktemp -d)
         for s in $(seq 1 "$INST_PARALLEL_SLOTS"); do
-            (assert_image_seen "$name" "$INST_PORT" "$key" "image read $s/$INST_PARALLEL_SLOTS") >"$tmp/$s" &
+            (assert_image_seen "$name" "$INST_PORT" "$key" "image read $s/$INST_PARALLEL_SLOTS" \
+                tests/fixtures/img/pelican.png "Record the single word written in this image." PELICAN) >"$tmp/$s" &
         done
         wait
         cat "$tmp"/*
