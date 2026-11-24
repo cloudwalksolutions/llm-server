@@ -39,6 +39,11 @@ async def outputs_within(comfyui, prompt_id, seconds):
     return entry["outputs"]
 
 
+async def queued(comfyui, prompt_id):
+    queue = (await comfyui.get("/queue")).json()
+    return any(job[1] == prompt_id for job in queue["queue_running"] + queue["queue_pending"])
+
+
 async def fetch(comfyui, file):
     response = await comfyui.get("/view", params=file)
     response.raise_for_status()
@@ -71,7 +76,7 @@ def build_server(comfyui, wait=240, **settings):
         prompt: str,
         seconds: Annotated[int, Field(ge=1, le=5)] = 2,
     ):
-        """Generate a short silent 1280x704 video clip from a text prompt. Takes about four minutes per second of video. Returns the clip, or a job_id for get_job if it is still rendering."""
+        """Make a video: generate a short silent 1280x704 clip from a text prompt. Takes about four minutes per second of video. Returns the clip, or a job_id for get_job if it is still rendering."""
         workflow = json.loads(VIDEO_WORKFLOW.read_text())
         workflow["5"]["inputs"]["text"] = prompt
         workflow["7"]["inputs"]["length"] = 24 * seconds + 1
@@ -80,7 +85,9 @@ def build_server(comfyui, wait=240, **settings):
 
     @mcp.tool()
     async def get_job(job_id: str):
-        """Get a video clip that was still rendering when video returned."""
+        """Get a clip that video started, using the job_id video returned. It cannot start a video: to make one, call video."""
+        if not (await queued(comfyui, job_id) or (await comfyui.get(f"/history/{job_id}")).json()):
+            raise ComfyUIError(f'There is no job "{job_id}". Call video to start one.')
         return await clip_or_pending(job_id)
 
     return mcp
