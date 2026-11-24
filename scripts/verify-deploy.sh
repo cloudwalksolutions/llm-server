@@ -294,6 +294,8 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
     echo -e "${YELLOW}comfyui${NC}"
     if [[ "$COMFYUI_ENABLED" == true ]]; then
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "active"
+        assert_eq "GPU lockup timeout ms, so a long ComfyUI kernel cannot get the LLM's queue reset" \
+            "$(remote_exec "cat /sys/module/amdgpu/parameters/lockup_timeout" 2>/dev/null)" "10000"
         check_comfyui_generates_on_the_gpu
         check_comfyui_is_published
         check_comfyui_mcp_generates

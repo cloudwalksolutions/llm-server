@@ -5,7 +5,7 @@ import httpx
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from server import build_server
+from server import VIDEO_WORKFLOW, WORKFLOW, build_server
 
 pytestmark = pytest.mark.anyio
 
@@ -108,6 +108,8 @@ WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8X animated"
 
 
 def finished_clip(request):
+    if request.url.path == "/queue":
+        return httpx.Response(200, json={"queue_running": [], "queue_pending": []})
     if request.url.path == "/prompt":
         return httpx.Response(200, json={"prompt_id": "v1"})
     if request.url.path == "/history/v1":
@@ -164,6 +166,39 @@ async def test_a_clip_still_running_returns_its_job_which_get_job_returns_when_d
     result = await call(fake_comfyui(comfyui), "get_job", {"job_id": "v1"}, wait=0)
 
     assert result.content[1].mimeType == "image/webp"
+
+
+async def test_a_retried_video_returns_the_clip_already_rendering_instead_of_starting_another():
+    posted = []
+
+    def comfyui(request):
+        if request.url.path == "/queue":
+            running = json.loads(VIDEO_WORKFLOW.read_text())
+            return httpx.Response(200, json={"queue_running": [[0, "v1", running, {}, ["9"]]], "queue_pending": []})
+        if request.url.path == "/prompt":
+            posted.append(request)
+        return finished_clip(request)
+
+    result = await call(fake_comfyui(comfyui), "video", {"prompt": "waves"})
+
+    assert posted == []
+    assert result.content[1].mimeType == "image/webp"
+
+
+async def test_an_image_being_generated_does_not_stop_a_video_from_starting():
+    posted = []
+
+    def comfyui(request):
+        if request.url.path == "/queue":
+            image = json.loads(WORKFLOW.read_text())
+            return httpx.Response(200, json={"queue_running": [[0, "i1", image, {}, ["10"]]], "queue_pending": []})
+        if request.url.path == "/prompt":
+            posted.append(request)
+        return finished_clip(request)
+
+    await call(fake_comfyui(comfyui), "video", {"prompt": "waves"})
+
+    assert len(posted) == 1
 
 
 async def test_a_job_comfyui_never_ran_is_refused_so_the_model_starts_one_with_video():
