@@ -402,18 +402,62 @@ elif [[ "$COMFYUI_ACTIVE" == active || "$COMFYUI_AT_BOOT" == enabled ]]; then
 fi
 ((COMFYUI_START)) && echo -e "  ${YELLOW}START${NC}      comfyui (enabled in $COMFYUI_CONFIG)"
 ((COMFYUI_STOP)) && echo -e "  ${YELLOW}STOP${NC}       comfyui (disabled or not configured)"
-COMFYUI_CHANGED=$((COMFYUI_UNIT_CHANGED || COMFYUI_START || COMFYUI_STOP))
+NEW_MCP_UNIT=""
+[[ "$COMFYUI_CONFIGURED" == true ]] && NEW_MCP_UNIT=$(render_comfyui_mcp_unit)
+CUR_MCP_UNIT=$(remote_exec "cat $COMFYUI_MCP_UNIT_PATH 2>/dev/null" || echo "")
+MCP_UNIT_CHANGED=0
+if [[ "$CUR_MCP_UNIT" == "$NEW_MCP_UNIT" ]]; then
+    [[ -n "$NEW_MCP_UNIT" ]] && echo -e "  ${GREEN}unchanged${NC}  $COMFYUI_MCP_UNIT_PATH"
+else
+    MCP_UNIT_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_MCP_UNIT_PATH"
+    diff -u <(printf '%s\n' "$CUR_MCP_UNIT") <(printf '%s\n' "$NEW_MCP_UNIT") | sed 's/^/      /' || true
+fi
+MCP_STAGE=$(mktemp -d)
+trap 'rm -rf "$MCP_STAGE"' EXIT
+MCP_CODE_CHANGED=0
+if [[ "$COMFYUI_CONFIGURED" == true ]]; then
+    stage_comfyui_mcp "$MCP_STAGE"
+    NEW_MCP_MANIFEST=$(cd "$MCP_STAGE" && bash -c "$COMFYUI_MCP_MANIFEST")
+    CUR_MCP_MANIFEST=$(remote_exec "cd $(_shq "$COMFYUI_MCP_DIR") 2>/dev/null && $COMFYUI_MCP_MANIFEST" 2>/dev/null || echo "")
+    if [[ "$CUR_MCP_MANIFEST" == "$NEW_MCP_MANIFEST" ]]; then
+        echo -e "  ${GREEN}unchanged${NC}  $COMFYUI_MCP_DIR"
+    else
+        MCP_CODE_CHANGED=1
+        echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_MCP_DIR"
+        diff <(awk '{print $2}' <<<"$CUR_MCP_MANIFEST") <(awk '{print $2}' <<<"$NEW_MCP_MANIFEST") | sed 's/^/      /' || true
+    fi
+fi
+MCP_ACTIVE=$(remote_exec "systemctl is-active comfyui-mcp" 2>/dev/null || true)
+MCP_AT_BOOT=$(remote_exec "systemctl is-enabled comfyui-mcp" 2>/dev/null || true)
+MCP_START=0
+MCP_STOP=0
+if [[ "$COMFYUI_ENABLED" == true ]]; then
+    if ((COMFYUI_START || MCP_UNIT_CHANGED || MCP_CODE_CHANGED)) || [[ "$MCP_ACTIVE" != active || "$MCP_AT_BOOT" != enabled ]]; then
+        MCP_START=1
+    fi
+elif [[ "$MCP_ACTIVE" == active || "$MCP_AT_BOOT" == enabled ]]; then
+    MCP_STOP=1
+fi
+((MCP_START)) && echo -e "  ${YELLOW}START${NC}      comfyui-mcp"
+((MCP_STOP)) && echo -e "  ${YELLOW}STOP${NC}       comfyui-mcp"
+COMFYUI_CHANGED=$((COMFYUI_UNIT_CHANGED || COMFYUI_START || COMFYUI_STOP || MCP_UNIT_CHANGED || MCP_CODE_CHANGED || MCP_START || MCP_STOP))
 
 NEW_PROXY=""
 NEW_KEY_MAP=""
+NEW_MCP_KEY_MAP=""
 if [[ "$COMFYUI_CONFIGURED" == true ]]; then
     [[ "${COMFYUI_API_KEY:-}" =~ ^[A-Za-z0-9_-]{32,}$ ]] \
         || { _cfg_err "COMFYUI_API_KEY in the env file must be 32 or more letters, digits, - or _"; exit 1; }
+    [[ "${COMFYUI_MCP_KEY:-}" =~ ^[A-Za-z0-9_-]{32,}$ ]] \
+        || { _cfg_err "COMFYUI_MCP_KEY in the env file must be 32 or more letters, digits, - or _"; exit 1; }
     NEW_PROXY=$(render_comfyui_proxy)
     NEW_KEY_MAP=$(render_comfyui_key_map "$COMFYUI_API_KEY")
+    NEW_MCP_KEY_MAP=$(render_comfyui_key_map "$COMFYUI_MCP_KEY")
 fi
 CUR_PROXY=$(remote_exec "cat $COMFYUI_PROXY_PATH 2>/dev/null" || echo "")
 CUR_KEY_MAP=$(remote_exec_sudo "cat $COMFYUI_KEY_MAP_PATH 2>/dev/null" || echo "")
+CUR_MCP_KEY_MAP=$(remote_exec_sudo "cat $COMFYUI_MCP_KEY_MAP_PATH 2>/dev/null" || echo "")
 PROXY_CHANGED=0
 if [[ "$CUR_PROXY" != "$NEW_PROXY" ]]; then
     PROXY_CHANGED=1
@@ -423,6 +467,10 @@ fi
 if [[ "$CUR_KEY_MAP" != "$NEW_KEY_MAP" ]]; then
     PROXY_CHANGED=1
     echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_KEY_MAP_PATH (the key is not shown)"
+fi
+if [[ "$CUR_MCP_KEY_MAP" != "$NEW_MCP_KEY_MAP" ]]; then
+    PROXY_CHANGED=1
+    echo -e "  ${YELLOW}CHANGED${NC}    $COMFYUI_MCP_KEY_MAP_PATH (the key is not shown)"
 fi
 if [[ -n "$NEW_PROXY" ]] && ! comfyui_proxy_listening; then
     PROXY_CHANGED=1
@@ -463,6 +511,10 @@ if [[ "$MODE" == "dry-run" ]]; then
     ((COMFYUI_UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_UNIT_PATH + daemon-reload${NC}"
     ((COMFYUI_STOP)) && echo -e "${YELLOW}DRY RUN — would stop and disable comfyui before any instance starts${NC}"
     ((COMFYUI_START)) && echo -e "${YELLOW}DRY RUN — would enable and (re)start comfyui after the instances${NC}"
+    ((MCP_CODE_CHANGED)) && echo -e "${YELLOW}DRY RUN — would replace $COMFYUI_MCP_DIR and rebuild its venv${NC}"
+    ((MCP_UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_MCP_UNIT_PATH + daemon-reload${NC}"
+    ((MCP_STOP)) && echo -e "${YELLOW}DRY RUN — would stop and disable comfyui-mcp${NC}"
+    ((MCP_START)) && echo -e "${YELLOW}DRY RUN — would enable and (re)start comfyui-mcp after comfyui${NC}"
     ((PROXY_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite ComfyUI's proxy, nginx -t and reload nginx${NC}"
     ((TUNNEL_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $TUNNEL_CONFIG and restart cloudflared${NC}"
     echo -e "${YELLOW}DRY RUN — would restart: ${RESTART[*]:-nothing}${NC}"
@@ -512,6 +564,21 @@ run_rollback() {
     exit 1
 }
 trap run_rollback ERR
+
+replace_remote_file() {
+    local path="$1" mode="$2" undo="$3" content="$4"
+    if remote_exec_sudo "test -e $path"; then
+        remote_exec_sudo "cp -p $path $path.backup.$TIMESTAMP"
+        rb "cp -p $path.backup.$TIMESTAMP $path && $undo"
+    else
+        rb "rm -f $path && $undo"
+    fi
+    if [[ -z "$content" ]]; then
+        remote_exec_sudo "rm -f $path"
+    else
+        printf '%s\n' "$content" | remote_write_sudo "$path" "$mode"
+    fi
+}
 
 if ((UNIT_CHANGED)); then
     echo -e "${CYAN}[6/7]${NC} Installing $UNIT_PATH"
@@ -574,6 +641,13 @@ if ((ROUTER_CHANGED)); then
     echo -e "  ${GREEN}router written + nginx -t + reloaded${NC}"
 fi
 
+if ((MCP_STOP)); then
+    echo -e "${CYAN}[6/7]${NC} Stopping comfyui-mcp"
+    remote_exec_sudo "systemctl disable --now comfyui-mcp"
+    rb "systemctl enable --now comfyui-mcp"
+    echo -e "  ${GREEN}stopped and disabled${NC}"
+fi
+
 if ((COMFYUI_STOP)); then
     echo -e "${CYAN}[6/7]${NC} Stopping comfyui"
     remote_exec_sudo "systemctl disable --now comfyui"
@@ -599,6 +673,31 @@ if ((COMFYUI_UNIT_CHANGED)); then
         remote_exec_sudo "systemctl daemon-reload"
         echo -e "  ${GREEN}written + verified + daemon-reload${NC}"
     fi
+fi
+
+if ((MCP_CODE_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Installing the MCP server in $COMFYUI_MCP_DIR"
+    mcp_dir=$(_shq "$COMFYUI_MCP_DIR")
+    if remote_exec "test -d $mcp_dir"; then
+        remote_exec "cp -a $mcp_dir $mcp_dir.backup.$TIMESTAMP"
+        rb "rm -rf $mcp_dir && mv $mcp_dir.backup.$TIMESTAMP $mcp_dir"
+    else
+        rb "rm -rf $mcp_dir"
+    fi
+    COPYFILE_DISABLE=1 tar --no-xattrs -C "$MCP_STAGE" -cf - . | remote_exec "rm -rf $mcp_dir && mkdir -p $mcp_dir && tar -C $mcp_dir -xf -"
+    remote_exec "python3 -m venv $mcp_dir/.venv && $mcp_dir/.venv/bin/pip install --quiet --disable-pip-version-check --require-hashes -r $mcp_dir/requirements.txt"
+    [[ "$(remote_exec "cd $mcp_dir && $COMFYUI_MCP_MANIFEST")" == "$NEW_MCP_MANIFEST" ]] \
+        || { echo -e "${RED}the installed MCP server does not match what was staged${NC}" >&2; false; }
+    echo -e "  ${GREEN}written + verified + venv built${NC}"
+fi
+
+if ((MCP_UNIT_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Updating $COMFYUI_MCP_UNIT_PATH"
+    replace_remote_file "$COMFYUI_MCP_UNIT_PATH" 644 "systemctl daemon-reload" "$NEW_MCP_UNIT"
+    [[ "$(remote_exec "cat $COMFYUI_MCP_UNIT_PATH 2>/dev/null")" == "$NEW_MCP_UNIT" ]] \
+        || { echo -e "${RED}the written MCP unit does not match what was rendered${NC}" >&2; false; }
+    remote_exec_sudo "systemctl daemon-reload"
+    echo -e "  ${GREEN}written + verified + daemon-reload${NC}"
 fi
 
 for name in "${RETIRED_INSTANCES[@]}"; do
@@ -639,24 +738,23 @@ if ((COMFYUI_START)); then
     echo -e " ${GREEN}up${NC}"
 fi
 
-replace_remote_file() {
-    local path="$1" mode="$2" undo="$3" content="$4"
-    if remote_exec_sudo "test -e $path"; then
-        remote_exec_sudo "cp -p $path $path.backup.$TIMESTAMP"
-        rb "cp -p $path.backup.$TIMESTAMP $path && $undo"
-    else
-        rb "rm -f $path && $undo"
-    fi
-    if [[ -z "$content" ]]; then
-        remote_exec_sudo "rm -f $path"
-    else
-        printf '%s\n' "$content" | remote_write_sudo "$path" "$mode"
-    fi
-}
+if ((MCP_START)); then
+    echo -ne "${CYAN}[7/7]${NC} Starting comfyui-mcp "
+    rb "systemctl disable --now comfyui-mcp"
+    remote_exec_sudo "systemctl enable comfyui-mcp && systemctl restart comfyui-mcp"
+    start=$(date +%s)
+    until [[ "$(remote_exec "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$COMFYUI_MCP_PORT/mcp" 2>/dev/null)" != 000 ]]; do
+        (($(date +%s) - start < 60)) || { echo -e "\n${RED}comfyui-mcp did not answer within 60s${NC}" >&2; false; }
+        printf '.'
+        sleep 2
+    done
+    echo -e " ${GREEN}up${NC}"
+fi
 
 if ((PROXY_CHANGED)); then
     echo -e "${CYAN}[7/7]${NC} Updating ComfyUI's proxy"
     replace_remote_file "$COMFYUI_KEY_MAP_PATH" 600 "systemctl reload nginx" "$NEW_KEY_MAP"
+    replace_remote_file "$COMFYUI_MCP_KEY_MAP_PATH" 600 "systemctl reload nginx" "$NEW_MCP_KEY_MAP"
     replace_remote_file "$COMFYUI_PROXY_PATH" 644 "systemctl reload nginx" "$NEW_PROXY"
     [[ -n "$NEW_PROXY" ]] && allow_nginx_ports "$COMFYUI_API_PORT" "$COMFYUI_UI_PORT"
     remote_exec_sudo "nginx -t -q && systemctl reload nginx"

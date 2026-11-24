@@ -126,6 +126,7 @@ lint:
 test-unit:
 	@./tests/test-render.sh
 	@./tests/test-agent-judge.sh
+	@cd comfyui-mcp && uv run --locked pytest -q
 
 .PHONY: test-unit-accept
 test-unit-accept:

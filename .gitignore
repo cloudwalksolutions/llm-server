@@ -1,5 +1,8 @@
 **/.claude
 **/.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
 
 # Secrets: .env holds LLAMA_API_KEY and SSH_PASS.
 # The glob matters — timestamped backups leak the same values.

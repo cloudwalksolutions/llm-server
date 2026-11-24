@@ -3,6 +3,11 @@ map $http_authorization $comfyui_key_ok {
     include @KEY_MAP@;
 }
 
+map $http_authorization $comfyui_mcp_key_ok {
+    default 0;
+    include @MCP_KEY_MAP@;
+}
+
 map $http_upgrade $comfyui_connection {
     default upgrade;
     '' '';
@@ -21,6 +26,18 @@ server {
         proxy_set_header Host $host;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $comfyui_connection;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    location /mcp {
+        if ($comfyui_mcp_key_ok = 0) {
+            return 401;
+        }
+        proxy_pass http://127.0.0.1:@MCP_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Authorization "";
         proxy_buffering off;
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
