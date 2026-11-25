@@ -280,6 +280,26 @@ check_comfyui_mcp_edits_an_upload() {
     fi
     rm -f "$edited"
     check_comfyui_mcp_cuts_out "$image"
+    check_comfyui_mcp_animates "$image"
+}
+
+check_comfyui_mcp_animates() {
+    local result start file frame
+    start=$(date +%s)
+    result=$(mcp_finished animate "$(jq -nc --arg i "$1" '{image: $i, prompt: "the camera slowly circles the apple", seconds: 1}')")
+    file=$(mktemp)
+    jq -r '._meta.image | select(.mimeType == "image/webp") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
+    if [[ "$(head -c 4 "$file")" == RIFF ]] && grep -q ANIM "$file"; then
+        ok "MCP animate is an animated WebP, made in $(($(date +%s) - start))s"
+        frame=$(mktemp)
+        middle_frame "$file" "$frame" \
+            && assert_router_model_sees "MCP animate keeps the picture" "$frame" \
+                "Record in one word the main object in this scene." 'APPLES?'
+        rm -f "$frame"
+    else
+        bad "MCP animate is not an animated WebP: $(head -c 200 <<<"$result")"
+    fi
+    rm -f "$file"
 }
 
 alpha_at_corner_and_center() {
