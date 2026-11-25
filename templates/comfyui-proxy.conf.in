@@ -42,6 +42,12 @@ server {
         proxy_read_timeout 1h;
         proxy_send_timeout 1h;
     }
+
+    location /upload/ {
+        proxy_pass http://127.0.0.1:@MCP_PORT@;
+        proxy_http_version 1.1;
+        proxy_set_header Authorization "";
+    }
 }
 
 server {

@@ -71,3 +71,13 @@ models:
     file: Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors
     dest: loras/Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors
     sha256: b48fb1a8edd939354579c1cf0b403c92f28879b32dddbaaa91b9d424bfc72081
+  - repo: Comfy-Org/Qwen-Image-Edit
+    revision: f68ace85e60b4a02a323e394253731947657b7d2
+    file: split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors
+    dest: diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors
+    sha256: c9fdc158e46d3b61ef75f21ae866ca2fe808bf4a53643120d1c1e87c19280a4e
+  - repo: lightx2v/Qwen-Image-Edit-2511-Lightning
+    revision: 107d238d68b8387e32843d0b4a2e24ceb0d3ad86
+    file: Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
+    dest: loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
+    sha256: 22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f
