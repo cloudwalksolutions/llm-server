@@ -24,6 +24,7 @@ from starlette.responses import JSONResponse
 
 WORKFLOW = Path(__file__).parent / "workflows" / "z-image-turbo.api.json"
 VIDEO_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-t2v-14b.api.json"
+ANIMATE_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-i2v-14b.api.json"
 COMIC_WORKFLOW = Path(__file__).parent / "workflows" / "qwen-image-2512-comic.json"
 COMIC_STYLE = ("Black-and-white xkcd-style stick figure comic panel, simple thin black line art, "
                "plain white background, no text, no letters. ")
@@ -38,11 +39,17 @@ COMIC_PAD = 12
 COMIC_LINE = 30
 COMIC_GAP = 16
 VIDEO_SIZES = {"480p": (832, 480), "720p": (1280, 720)}
+ANIMATE_SIZES = {
+    "480p": {"landscape": (832, 480), "portrait": (480, 832), "square": (640, 640)},
+    "720p": {"landscape": (1280, 720), "portrait": (720, 1280), "square": (960, 960)},
+}
 SHOWN = "It is shown to the user above your reply. Do not embed it or link to it."
 VIEWER = {"ui": {"resourceUri": "ui://comfyui/viewer"}}
 VIEWER_PAGE = Path(__file__).parent / "viewer.html"
 
 Side = Annotated[int, Field(ge=256, le=2048, multiple_of=16)]
+Seconds = Annotated[int, Field(ge=1, le=5)]
+Resolution = Literal["480p", "720p"]
 
 class Line(BaseModel):
     speaker: str
@@ -185,6 +192,19 @@ def image_id(image):
     return f"{image['filename']} [{image['type']}]"
 
 
+def stored_file(image):
+    name, _, kind = image.partition(" [")
+    return {"filename": name, "subfolder": "", "type": kind.rstrip("]") or "input"}
+
+
+def orientation(width, height):
+    if width > height * 1.1:
+        return "landscape"
+    if height > width * 1.1:
+        return "portrait"
+    return "square"
+
+
 async def store(comfyui, png, name):
     response = await comfyui.post("/upload/image", files={"image": (name, png, "image/png")},
                                   data={"overwrite": "true"})
@@ -275,8 +295,8 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectori
     @mcp.tool(meta=VIEWER)
     async def video(
         prompt: str,
-        seconds: Annotated[int, Field(ge=1, le=5)] = 2,
-        resolution: Literal["480p", "720p"] = "480p",
+        seconds: Seconds = 2,
+        resolution: Resolution = "480p",
     ):
         """Make a video: generate a short silent clip from a text prompt, at 832x480 or, only when asked, 1280x720. At 832x480 a 1 second clip takes about 2 minutes and a 2 second clip about 7; longer clips and 1280x720 take much longer. Returns the clip, or a job_id for get_job if it is still rendering. Calling it again while a clip renders returns that clip's job instead of starting another."""
         if running := await rendering_video(comfyui):
@@ -312,10 +332,29 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectori
         return await result_or_pending(await submit(comfyui, logo_workflow(description, text), logo=True))
 
     @mcp.tool(meta=VIEWER)
+    async def animate(image: str, prompt: str, seconds: Seconds = 2, resolution: Resolution = "480p",
+                      last_image: str | None = None):
+        """Animate a picture into a short silent clip: pass its image_id (from a picture these tools made, or from upload_link) and describe the motion and camera, not the scene, which the picture already sets. Give last_image to move from the first picture to another, a transition; pass the same image_id as both for a seamless loop. The clip keeps the picture's orientation, at 480p or, only when asked, 720p. At 480p a 1 second clip takes about 2 minutes and a 2 second clip about 7. Returns the clip, or a job_id for get_job. Calling it while a clip renders returns that clip's job instead of starting another."""
+        if running := await rendering_video(comfyui):
+            return await result_or_pending(running)
+        width, height = PIL.Image.open(io.BytesIO(await fetch(comfyui, stored_file(image)))).size
+        workflow = json.loads(ANIMATE_WORKFLOW.read_text())
+        workflow["5"]["inputs"]["text"] = prompt
+        workflow["16"]["inputs"]["image"] = image
+        workflow["7"]["inputs"].update(zip(("width", "height"), ANIMATE_SIZES[resolution][orientation(width, height)]),
+                                       length=24 * seconds + 1)
+        if last_image:
+            workflow["17"] = {"class_type": "LoadImage", "inputs": {"image": last_image}}
+            workflow["7"]["class_type"] = "WanFirstLastFrameToVideo"
+            workflow["7"]["inputs"]["end_image"] = ["17", 0]
+        workflow["8"]["inputs"]["noise_seed"] = random.randrange(2**32)
+        return await result_or_pending(await submit(comfyui, workflow))
+
+    @mcp.tool(meta=VIEWER)
     async def get_job(job_id: str):
-        """Get a clip, comic or edit that video, comic or edit started, using the job_id it returned. It cannot start one: to make one, call that tool."""
+        """Get a result that another tool (video, animate, comic, edit, logo, remove_background) started, using the job_id it returned. It cannot start one: to make one, call that tool."""
         if not (await queued(comfyui, job_id) or (await comfyui.get(f"/history/{job_id}")).json()):
-            raise ComfyUIError(f'There is no job "{job_id}". Call video, comic or edit to start one.')
+            raise ComfyUIError(f'There is no job "{job_id}". Call video, animate, comic, edit or logo to start one.')
         return await result_or_pending(job_id)
 
     return mcp

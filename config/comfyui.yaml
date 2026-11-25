@@ -89,3 +89,23 @@ models:
     file: background_removal/birefnet.safetensors
     dest: background_removal/birefnet.safetensors
     sha256: 9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154
+  - repo: Comfy-Org/Wan-2.2
+    revision: 5df3a4a3ed0628002308022198249dbbbd045d09
+    file: split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+    dest: diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+    sha256: 6122e79d55e0f235698d11d657f3b196c5273c830da00b2b013c5a048d5e6a42
+  - repo: Comfy-Org/Wan-2.2
+    revision: 5df3a4a3ed0628002308022198249dbbbd045d09
+    file: split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+    dest: diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+    sha256: 5471a457b6ac404202a5fbe6c11595a3d5641fc766b00f38763f72303fffc21e
+  - repo: Comfy-Org/Wan-2.2
+    revision: 5df3a4a3ed0628002308022198249dbbbd045d09
+    file: split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+    dest: loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors
+    sha256: d176c808d6fc461999b68e321efcb7501b20b8c3797523ed0df14f7d1deff11e
+  - repo: Comfy-Org/Wan-2.2
+    revision: 5df3a4a3ed0628002308022198249dbbbd045d09
+    file: split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+    dest: loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+    sha256: 024f21de095bc8fad9809ded3e9e49a2e170dcf27075da8145ba7d60d8aab7f9
