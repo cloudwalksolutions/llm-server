@@ -1,7 +1,10 @@
 import base64
+import io
 import json
 
 import httpx
+import PIL.Image
+import PIL.ImageDraw
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
@@ -35,7 +38,7 @@ async def test_every_tool_that_returns_a_picture_shows_it_in_the_viewer():
         tools = (await client.list_tools()).tools
 
     assert {tool.name: tool.meta["ui"]["resourceUri"] for tool in tools} == {
-        "generate": "ui://comfyui/viewer", "video": "ui://comfyui/viewer", "get_job": "ui://comfyui/viewer"}
+        name: "ui://comfyui/viewer" for name in ("generate", "video", "comic", "get_job")}
 
 
 async def test_the_viewer_is_served_as_an_mcp_app():
@@ -132,6 +135,7 @@ def finished_clip(request):
     if request.url.path == "/history/v1":
         return httpx.Response(200, json={"v1": {
             "status": {"status_str": "success", "messages": []},
+            "prompt": [0, "v1", {}, {}, ["9"]],
             "outputs": {"9": {"images": [{"filename": "clip_00001_.webp", "subfolder": "", "type": "output"}],
                               "animated": [True]}},
         }})
@@ -216,6 +220,130 @@ async def test_an_image_being_generated_does_not_stop_a_video_from_starting():
     await call(fake_comfyui(comfyui), "video", {"prompt": "waves"})
 
     assert len(posted) == 1
+
+
+def panel(scene="two stick figures at a whiteboard", *lines):
+    return {"scene": scene, "lines": [{"speaker": speaker, "text": text} for speaker, text in lines]}
+
+
+async def test_a_comic_with_no_panels_or_more_than_six_is_refused():
+    submitted = []
+    comfyui = fake_comfyui(lambda request: submitted.append(request) or httpx.Response(500))
+
+    for panels in ([], [panel()] * 7):
+        result = await call(comfyui, "comic", {"panels": panels})
+        assert result.isError
+        assert "panels" in result.content[0].text
+    assert submitted == []
+
+
+async def test_a_comic_is_one_job_drawing_each_scene_without_its_dialogue():
+    submitted = []
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            submitted.append(json.loads(request.content))
+            return httpx.Response(200, json={"prompt_id": "c1"})
+        return httpx.Response(200, json={})
+
+    panels = [panel("an engineer at a laptop", ("ENGINEER", "Is it working?")),
+              panel("a coworker shrugging", ("COWORKER", "It's always DNS."))]
+    await call(fake_comfyui(comfyui), "comic", {"panels": panels}, wait=0)
+
+    [job] = submitted
+    samplers = [node["inputs"] for node in job["prompt"].values() if node["class_type"] == "KSampler"]
+    prompts = [job["prompt"][sampler["positive"][0]]["inputs"]["text"] for sampler in samplers]
+    seeds = {sampler["seed"] for sampler in samplers}
+    assert [prompt.endswith(scene) and "xkcd" in prompt for prompt, scene in
+            zip(prompts, ["an engineer at a laptop", "a coworker shrugging"])] == [True, True]
+    assert not any("DNS" in prompt for prompt in prompts)
+    assert len(seeds) == 2
+    assert job["extra_data"]["comic"]["panels"] == panels
+
+
+def drawn_panel():
+    picture = PIL.Image.new("RGB", (1024, 1024), "white")
+    PIL.ImageDraw.Draw(picture).ellipse((400, 300, 600, 500), outline="black", width=8)
+    file = io.BytesIO()
+    picture.save(file, "PNG")
+    return file.getvalue()
+
+
+def comfyui_drawing_comics(done=lambda: True):
+    jobs = {}
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            body = json.loads(request.content)
+            jobs["c1"] = body
+            return httpx.Response(200, json={"prompt_id": "c1"})
+        if request.url.path == "/queue":
+            return httpx.Response(200, json={"queue_running": [], "queue_pending": []})
+        if request.url.path == "/history/c1" and not done():
+            return httpx.Response(200, json={})
+        if request.url.path == "/history/c1":
+            body = jobs["c1"]
+            saves = [key for key, node in body["prompt"].items() if node["class_type"] == "SaveImage"]
+            return httpx.Response(200, json={"c1": {
+                "status": {"status_str": "success", "messages": []},
+                "prompt": [0, "c1", body["prompt"], body["extra_data"], saves],
+                "outputs": {key: {"images": [{"filename": f"{key}.png", "subfolder": "", "type": "output"}]}
+                            for key in saves},
+            }})
+        if request.url.path == "/view":
+            return httpx.Response(200, content=drawn_panel())
+        return httpx.Response(404)
+
+    return fake_comfyui(comfyui)
+
+
+async def draw_comic(*panels, **arguments):
+    result = await call(comfyui_drawing_comics(), "comic", {"panels": list(panels), **arguments})
+    assert not result.isError, result.content[0].text
+    assert result.meta["image"]["mimeType"] == "image/png"
+    return PIL.Image.open(io.BytesIO(base64.b64decode(result.meta["image"]["data"])))
+
+
+async def test_a_comic_lays_its_panels_in_rows_of_three_with_the_dialogue_lettered_above_them():
+    talking = panel("two stick figures", ("ALICE", "Is it working?"))
+
+    one = await draw_comic(talking)
+    two = await draw_comic(talking, talking)
+    three = await draw_comic(talking, talking, talking)
+    four = await draw_comic(talking, talking, talking, talking)
+    silent = await draw_comic(panel("two stick figures"))
+
+    assert one.width < two.width < three.width == four.width
+    assert three.height < four.height
+    assert silent.height < one.height
+
+
+async def test_a_comic_still_being_drawn_returns_its_job_which_get_job_returns_when_done():
+    drawn = []
+    comfyui = comfyui_drawing_comics(done=lambda: bool(drawn))
+    started = await call(comfyui, "comic", {"panels": [panel()]}, wait=0)
+    assert "c1" in started.content[0].text
+
+    drawn.append(True)
+    result = await call(comfyui, "get_job", {"job_id": "c1"}, wait=0)
+
+    assert not result.isError, result.content[0].text
+    assert result.meta["image"]["mimeType"] == "image/png"
+
+
+async def test_a_title_is_lettered_above_the_panels():
+    untitled = await draw_comic(panel())
+    titled = await draw_comic(panel(), title="Debugging")
+
+    assert titled.height > untitled.height
+
+
+async def test_a_line_too_long_for_its_panel_wraps_instead_of_running_off_it():
+    short = await draw_comic(panel("a stick figure", ("ALICE", "Hi.")))
+    long = await draw_comic(panel("a stick figure", ("ALICE", "I have been debugging this for six hours " * 3)))
+
+    assert long.width == short.width
+    assert long.height > short.height
 
 
 async def test_a_job_comfyui_never_ran_is_refused_so_the_model_starts_one_with_video():

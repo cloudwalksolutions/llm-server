@@ -272,14 +272,37 @@ mcp_call() {
     mcp_rpc tools/call "$(jq -nc --arg t "$1" --argjson a "$2" '{name: $t, arguments: $a}')"
 }
 
-check_comfyui_mcp_makes_video() {
-    local result job start file bytes frame
+mcp_finished() {
+    local start result job
     start=$(date +%s)
-    result=$(mcp_call video '{"prompt":"ocean waves rolling onto a sandy beach","seconds":1}')
+    result=$(mcp_call "$1" "$2")
     while job=$(jq -r '.content[0].text // "" | capture("job_id \"(?<id>[^\"]+)\"").id // empty' <<<"$result") && [[ -n "$job" ]]; do
-        (($(date +%s) - start < 1200)) || { bad "MCP video did not finish in 1200s"; return; }
+        (($(date +%s) - start < 1200)) || { echo '{"error": "did not finish in 1200s"}'; return; }
         result=$(mcp_call get_job "$(jq -nc --arg j "$job" '{job_id: $j}')")
     done
+    echo "$result"
+}
+
+check_comfyui_mcp_draws_a_comic() {
+    local result start file
+    start=$(date +%s)
+    result=$(mcp_finished comic '{"panels":[{"scene":"a stick figure waving","lines":[{"speaker":"ALICE","text":"Hello world"}]}]}')
+    file=$(mktemp)
+    jq -r '._meta.image | select(.mimeType == "image/png") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
+    if [[ "$(xxd -p -l 8 "$file")" == 89504e470d0a1a0a ]]; then
+        ok "MCP comic is a PNG, drawn in $(($(date +%s) - start))s"
+        assert_router_model_sees "MCP comic letters its dialogue" "$file" \
+            "Record the first word ALICE says in this comic." 'HELLO'
+    else
+        bad "MCP comic is not a PNG: $(head -c 200 <<<"$result")"
+    fi
+    rm -f "$file"
+}
+
+check_comfyui_mcp_makes_video() {
+    local result start file bytes frame
+    start=$(date +%s)
+    result=$(mcp_finished video '{"prompt":"ocean waves rolling onto a sandy beach","seconds":1}')
     file=$(mktemp)
     jq -r '._meta.image | select(.mimeType == "image/webp") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
     if [[ "$(head -c 4 "$file")" == RIFF && "$(head -c 12 "$file" | tail -c 4)" == WEBP ]] && grep -q ANIM "$file"; then
@@ -307,6 +330,7 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
         check_comfyui_is_published
         check_comfyui_mcp_generates
         check_comfyui_mcp_makes_video
+        check_comfyui_mcp_draws_a_comic
     else
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi

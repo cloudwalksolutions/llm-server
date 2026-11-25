@@ -51,3 +51,23 @@ models:
     file: split_files/vae/wan_2.1_vae.safetensors
     dest: vae/wan_2.1_vae.safetensors
     sha256: 2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b
+  - repo: Comfy-Org/Qwen-Image
+    revision: 1f12b17be14c89b026c51a91d67c32f84bb047bc
+    file: split_files/diffusion_models/qwen_image_2512_fp8_e4m3fn.safetensors
+    dest: diffusion_models/qwen_image_2512_fp8_e4m3fn.safetensors
+    sha256: 5dc80554d5d83390046a2f4a94ece06afb7700bf7b0aaf8bde9769793875876b
+  - repo: Comfy-Org/Qwen-Image
+    revision: 1f12b17be14c89b026c51a91d67c32f84bb047bc
+    file: split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
+    dest: text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors
+    sha256: cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4
+  - repo: Comfy-Org/Qwen-Image
+    revision: 1f12b17be14c89b026c51a91d67c32f84bb047bc
+    file: split_files/vae/qwen_image_vae.safetensors
+    dest: vae/qwen_image_vae.safetensors
+    sha256: a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f
+  - repo: lightx2v/Qwen-Image-2512-Lightning
+    revision: 4609161e308ce82018a42c2a0c9b107e865bb751
+    file: Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors
+    dest: loras/Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors
+    sha256: b48fb1a8edd939354579c1cf0b403c92f28879b32dddbaaa91b9d424bfc72081
