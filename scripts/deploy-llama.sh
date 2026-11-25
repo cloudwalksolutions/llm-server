@@ -436,6 +436,15 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
         diff <(awk '{print $2}' <<<"$CUR_MCP_MANIFEST") <(awk '{print $2}' <<<"$NEW_MCP_MANIFEST") | sed 's/^/      /' || true
     fi
 fi
+VTRACER_CHANGED=0
+if [[ "$COMFYUI_CONFIGURED" == true ]]; then
+    if [[ "$(remote_exec "test -x $VTRACER_DIR/vtracer && cat $VTRACER_DIR/.sha256" 2>/dev/null || true)" == "$VTRACER_SHA256" ]]; then
+        echo -e "  ${GREEN}unchanged${NC}  $VTRACER_DIR"
+    else
+        VTRACER_CHANGED=1
+        echo -e "  ${YELLOW}CHANGED${NC}    $VTRACER_DIR ($VTRACER_URL)"
+    fi
+fi
 MCP_ACTIVE=$(remote_exec "systemctl is-active comfyui-mcp" 2>/dev/null || true)
 MCP_AT_BOOT=$(remote_exec "systemctl is-enabled comfyui-mcp" 2>/dev/null || true)
 MCP_START=0
@@ -520,6 +529,7 @@ if [[ "$MODE" == "dry-run" ]]; then
     ((COMFYUI_UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_UNIT_PATH + daemon-reload${NC}"
     ((COMFYUI_STOP)) && echo -e "${YELLOW}DRY RUN — would stop and disable comfyui before any instance starts${NC}"
     ((COMFYUI_START)) && echo -e "${YELLOW}DRY RUN — would enable and (re)start comfyui after the instances${NC}"
+    ((VTRACER_CHANGED)) && echo -e "${YELLOW}DRY RUN — would download, check and install vtracer in $VTRACER_DIR${NC}"
     ((MCP_CODE_CHANGED)) && echo -e "${YELLOW}DRY RUN — would replace $COMFYUI_MCP_DIR and rebuild its venv${NC}"
     ((MCP_UNIT_CHANGED)) && echo -e "${YELLOW}DRY RUN — would rewrite $COMFYUI_MCP_UNIT_PATH + daemon-reload${NC}"
     ((MCP_STOP)) && echo -e "${YELLOW}DRY RUN — would stop and disable comfyui-mcp${NC}"
@@ -699,6 +709,23 @@ if ((COMFYUI_UNIT_CHANGED)); then
         remote_exec_sudo "systemctl daemon-reload"
         echo -e "  ${GREEN}written + verified + daemon-reload${NC}"
     fi
+fi
+
+if ((VTRACER_CHANGED)); then
+    echo -e "${CYAN}[6/7]${NC} Installing vtracer in $VTRACER_DIR"
+    stage="$VTRACER_DIR.staging"
+    remote_exec_sudo "rm -rf $stage && mkdir -p $stage && curl -fsSL -o $stage/vtracer.tar.gz $(_shq "$VTRACER_URL")"
+    actual=$(remote_exec "sha256sum $stage/vtracer.tar.gz" | cut -d' ' -f1)
+    if [[ "$actual" != "$VTRACER_SHA256" ]]; then
+        remote_exec_sudo "rm -rf $stage"
+        echo -e "${RED}vtracer sha256 mismatch: got $actual, want $VTRACER_SHA256. Not using it.${NC}" >&2
+        false
+    fi
+    remote_exec_sudo "tar -xzf $stage/vtracer.tar.gz -C $stage vtracer && rm $stage/vtracer.tar.gz \
+        && chown -R root:root $stage && chmod 755 $stage $stage/vtracer && echo $VTRACER_SHA256 > $stage/.sha256 \
+        && rm -rf $VTRACER_DIR.previous && { [ ! -e $VTRACER_DIR ] || mv $VTRACER_DIR $VTRACER_DIR.previous; } && mv $stage $VTRACER_DIR"
+    rb "rm -rf $VTRACER_DIR && { [ ! -e $VTRACER_DIR.previous ] || mv $VTRACER_DIR.previous $VTRACER_DIR; }"
+    echo -e "  ${GREEN}downloaded + sha256 verified + installed${NC}"
 fi
 
 if ((MCP_CODE_CHANGED)); then

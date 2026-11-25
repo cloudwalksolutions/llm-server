@@ -279,6 +279,40 @@ check_comfyui_mcp_edits_an_upload() {
         bad "MCP edit is not a PNG: $(head -c 200 <<<"$result")"
     fi
     rm -f "$edited"
+    check_comfyui_mcp_cuts_out "$image"
+}
+
+alpha_at_corner_and_center() {
+    uv run --quiet --project "$COMFYUI_MCP_SOURCE" python -I -c '
+import sys, PIL.Image
+picture = PIL.Image.open(sys.argv[1]).convert("RGBA")
+print(picture.getpixel((0, 0))[3], picture.getpixel((picture.width // 2, picture.height // 2))[3])' "$1"
+}
+
+check_comfyui_mcp_cuts_out() {
+    local result cutout
+    result=$(mcp_finished remove_background "$(jq -nc --arg i "$1" '{image: $i}')")
+    cutout=$(mktemp)
+    jq -r '._meta.downloads[0].data // empty' <<<"$result" | base64 -d >"$cutout" 2>/dev/null
+    assert_eq "MCP cutout alpha at the corner and the center" "$(alpha_at_corner_and_center "$cutout" 2>&1)" "0 255"
+    rm -f "$cutout"
+}
+
+check_comfyui_mcp_draws_a_logo() {
+    local result png svg
+    result=$(mcp_finished logo '{"description":"a red rocket","text":"ACME"}')
+    png=$(mktemp)
+    svg=$(mktemp)
+    jq -r '._meta.downloads[] | select(.name == "logo.png") | .data' <<<"$result" | base64 -d >"$png" 2>/dev/null
+    jq -r '._meta.downloads[] | select(.name == "logo.svg") | .data' <<<"$result" | base64 -d >"$svg" 2>/dev/null
+    assert_eq "MCP logo alpha at the corner" "$(alpha_at_corner_and_center "$png" 2>&1 | cut -d' ' -f1)" "0"
+    if [[ "$(head -c 5 "$svg")" == "<?xml" ]] && grep -q "<path" "$svg"; then
+        ok "MCP logo has an SVG traced by vtracer ($(wc -c <"$svg" | tr -d ' ') bytes)"
+    else
+        bad "MCP logo has no SVG: $(head -c 200 <<<"$result")"
+    fi
+    assert_router_model_sees "MCP logo draws its text" "$png" "Record the word written in this logo." 'ACME'
+    rm -f "$png" "$svg"
 }
 
 mcp_rpc() {
@@ -353,6 +387,9 @@ if [[ "$COMFYUI_CONFIGURED" == true ]]; then
         check_comfyui_mcp_generates
         check_comfyui_mcp_makes_video
         check_comfyui_mcp_draws_a_comic
+        assert_eq "vtracer is the pinned build" \
+            "$(remote_exec "test -x $VTRACER_DIR/vtracer && cat $VTRACER_DIR/.sha256" 2>/dev/null)" "$VTRACER_SHA256"
+        check_comfyui_mcp_draws_a_logo
     else
         assert_eq "systemd active" "$(remote_exec "systemctl is-active comfyui" 2>/dev/null)" "inactive"
     fi

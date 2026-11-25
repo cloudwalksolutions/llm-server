@@ -6,6 +6,8 @@ import math
 import os
 import random
 import secrets
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Annotated, Literal
@@ -26,8 +28,11 @@ COMIC_WORKFLOW = Path(__file__).parent / "workflows" / "qwen-image-2512-comic.js
 COMIC_STYLE = ("Black-and-white xkcd-style stick figure comic panel, simple thin black line art, "
                "plain white background, no text, no letters. ")
 UPLOAD_LINK_SECONDS = 600
-EDIT_WORKFLOW =Path(__file__).parent / "workflows" / "qwen-image-edit-2511.json"
-COMIC_FONT =Path(__file__).parent / "fonts" / "Humor-Sans.ttf"
+CUTOUT_WORKFLOW = Path(__file__).parent / "workflows" / "remove-background.json"
+EDIT_WORKFLOW = Path(__file__).parent / "workflows" / "qwen-image-edit-2511.json"
+LOGO_STYLE = ("A professional flat vector logo, solid flat colors, crisp clean edges, no gradients, no shadows, "
+              "no photo, centered on a plain white background. ")
+COMIC_FONT = Path(__file__).parent / "fonts" / "Humor-Sans.ttf"
 COMIC_PANEL = 400
 COMIC_PAD = 12
 COMIC_LINE = 30
@@ -59,17 +64,30 @@ async def submit(comfyui, workflow, **extra_data):
     return response.json()["prompt_id"]
 
 
-def comic_workflow(panels):
+def qwen_image_workflow(prompts):
     template = json.loads(COMIC_WORKFLOW.read_text())
     workflow = dict(template["shared"])
-    for number, panel in enumerate(panels):
+    for number, prompt in enumerate(prompts):
         def own(value):
             return [f"{number}.{value[0]}", value[1]] if isinstance(value, list) and value[0] in template["panel"] else value
         for key, node in template["panel"].items():
             workflow[f"{number}.{key}"] = {**node, "inputs": {name: own(value) for name, value in node["inputs"].items()}}
-        workflow[f"{number}.positive"]["inputs"]["text"] = COMIC_STYLE + panel.scene
+        workflow[f"{number}.positive"]["inputs"]["text"] = prompt
         workflow[f"{number}.sampler"]["inputs"]["seed"] = random.randrange(2**32)
     return workflow
+
+
+def comic_workflow(panels):
+    return qwen_image_workflow([COMIC_STYLE + panel.scene for panel in panels])
+
+
+def logo_workflow(description, text):
+    workflow = qwen_image_workflow([LOGO_STYLE + description + (f', with the text "{text}"' if text else "")])
+    cutout = json.loads(CUTOUT_WORKFLOW.read_text())
+    del workflow["0.save"], cutout["load"]
+    cutout["mask"]["inputs"]["image"] = cutout["join"]["inputs"]["image"] = ["0.decode", 0]
+    cutout["save"]["inputs"]["filename_prefix"] = "logo"
+    return {**workflow, **cutout}
 
 
 def edit_workflow(prompt, images):
@@ -175,15 +193,27 @@ async def store(comfyui, png, name):
     return image_id({"filename": stored["name"], "type": stored["type"]})
 
 
-def shown(data, mime_type, image=None):
+def encoded(data, mime_type, **fields):
+    return {**fields, "mimeType": mime_type, "data": base64.b64encode(data).decode()}
+
+
+def shown(data, mime_type, image=None, downloads=()):
     text = SHOWN if image is None else f'{SHOWN} To change it, pass its image_id "{image}" to edit.'
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
-        _meta={"image": {"mimeType": mime_type, "data": base64.b64encode(data).decode()}},
+        _meta={"image": encoded(data, mime_type), **({"downloads": list(downloads)} if downloads else {})},
     )
 
 
-def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, **settings):
+def traced_svg(png):
+    with tempfile.TemporaryDirectory() as folder:
+        picture, svg = Path(folder) / "logo.png", Path(folder) / "logo.svg"
+        picture.write_bytes(png)
+        subprocess.run([os.environ["VTRACER"], "--input", picture, "--output", svg], check=True, capture_output=True)
+        return svg.read_bytes()
+
+
+def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectorize=traced_svg, **settings):
     mcp = FastMCP("comfyui", stateless_http=True, **settings)
     links = {}
 
@@ -233,7 +263,12 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, **setti
             return shown(strip, "image/png", await store(comfyui, strip, f"comic-{job_id}.png"))
         if "save" in entry["outputs"]:
             [image] = entry["outputs"]["save"]["images"]
-            return shown(await fetch(comfyui, image), "image/png", image_id(image))
+            png = await fetch(comfyui, image)
+            if entry["prompt"][3].get("logo"):
+                svg = await asyncio.to_thread(vectorize, png)
+                return shown(png, "image/png", image_id(image), [encoded(png, "image/png", name="logo.png"),
+                                                                 encoded(svg, "image/svg+xml", name="logo.svg")])
+            return shown(png, "image/png", image_id(image), [encoded(png, "image/png", name=image["filename"])])
         [clip] = entry["outputs"]["9"]["images"]
         return shown(await fetch(comfyui, clip), "image/webp")
 
@@ -263,6 +298,18 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, **setti
     async def edit(prompt: str, images: Annotated[list[str], Field(min_length=1, max_length=3)]):
         """Edit pictures by instruction: change the background, outfit, lighting or style, add or remove an object, restore or colorize an old photo, or combine pictures ("put the person in image 1 into the scene in image 2"). Pass up to 3 image_ids: one from a picture these tools made, or from upload_link for a picture the user attached. The result keeps the first picture's composition. Returns the picture and its new image_id, or a job_id for get_job if it is still rendering (about a minute)."""
         return await result_or_pending(await submit(comfyui, edit_workflow(prompt, images)))
+
+    @mcp.tool(meta=VIEWER)
+    async def remove_background(image: str):
+        """Remove the background from a picture, leaving the subject on transparency: cutouts, stickers, product shots. Pass the image_id of a picture these tools made, or one from upload_link. Returns the transparent PNG, which the user can download, and its image_id."""
+        workflow = json.loads(CUTOUT_WORKFLOW.read_text())
+        workflow["load"]["inputs"]["image"] = image
+        return await result_or_pending(await submit(comfyui, workflow))
+
+    @mcp.tool(meta=VIEWER)
+    async def logo(description: str, text: str | None = None):
+        """Design a flat vector logo on a transparent background, offered to the user as a PNG and an SVG download. Describe the mark in description (subject, shapes, colors, mood) and pass any wording to text, which is drawn exactly. Takes about a minute; returns the logo and its image_id, or a job_id for get_job."""
+        return await result_or_pending(await submit(comfyui, logo_workflow(description, text), logo=True))
 
     @mcp.tool(meta=VIEWER)
     async def get_job(job_id: str):

@@ -5,6 +5,9 @@ ui_port: 8190
 mcp_port: 8191
 container_image: us-east1-docker.pkg.dev/on-prem-cw-admin-project/llm-images/amd-strix-halo-comfyui:20260811-102353
 dir: /opt/llm/comfyui
+vtracer:
+  url: https://github.com/visioncortex/vtracer/releases/download/1.0.0-alpha.4/vtracer-x86_64-unknown-linux-musl.tar.gz
+  sha256: 2058f611b48ed49497f78883bde47435531e9e17e3a79428432d1528bdb12e2a
 models:
   - repo: Comfy-Org/Z-Image-Turbo
     revision: 6fc90a3b1b653e935a0d175e260736de25b84df5
@@ -81,3 +84,8 @@ models:
     file: Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
     dest: loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors
     sha256: 22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f
+  - repo: Comfy-Org/BiRefNet
+    revision: 884af709e9b795d89dafbf97f29c8d6a2386f5c6
+    file: background_removal/birefnet.safetensors
+    dest: background_removal/birefnet.safetensors
+    sha256: 9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154

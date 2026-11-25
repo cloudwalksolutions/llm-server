@@ -401,6 +401,25 @@ test_comfyui_example_is_valid() {
     pass "comfyui example is valid"
 }
 
+expect_comfyui_reject() {
+    local label="$1" expr="$2" out cfg
+    cfg=$(mktemp)
+    yq "$expr" config/comfyui.example.yaml > "$cfg"
+    if out=$(COMFYUI_CONFIG="$cfg" LLAMA_CONFIG=config/llama.example.yaml "$DEPLOY" --render comfyui 2>&1); then
+        fail "$label was accepted but should be rejected"
+    else
+        pass "$label rejected: $(head -1 <<<"$out" | sed 's/\x1b\[[0-9;]*m//g')"
+    fi
+    rm -f "$cfg"
+}
+
+test_comfyui_refuses_an_unpinned_vtracer() {
+    echo "TEST: the logo tool traces SVGs only with the vtracer pinned by URL and sha256"
+    expect_comfyui_reject "missing vtracer"          'del(.vtracer)'
+    expect_comfyui_reject "vtracer without a sha256" '.vtracer.sha256 = "latest"'
+    expect_comfyui_reject "vtracer over plain http"  '.vtracer.url = "http://example.com/vtracer.tar.gz"'
+}
+
 test_example_documents_every_key() {
     echo "TEST: the example documents every key load_instance reads"
     local missing=() k
@@ -852,6 +871,7 @@ else
              test_rejects_flat_legacy_schema \
              test_example_config_is_valid \
              test_comfyui_example_is_valid \
+             test_comfyui_refuses_an_unpinned_vtracer \
              test_example_documents_every_key \
              test_remote_quoting_is_safe \
              test_agent_gate_fails_a_run_that_stopped_early \

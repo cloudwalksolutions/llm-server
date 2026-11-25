@@ -5,6 +5,9 @@ ui_port: 8190
 mcp_port: 8191
 container_image: example.invalid/comfyui:test
 dir: /opt/llm/comfyui
+vtracer:
+  url: https://example.invalid/vtracer.tar.gz
+  sha256: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
 models:
   - repo: example/model
     revision: 0123456789abcdef0123456789abcdef01234567

@@ -253,9 +253,11 @@ COMFYUI_UI_HOST=<web UI hostname>
 
 An MCP server for ComfyUI, `comfyui-mcp/`, with `generate` (Z-Image Turbo stills), `comic`
 (xkcd-style strips drawn by Qwen-Image 2512, with the dialogue lettered in Humor Sans rather than
-drawn by the model), `edit` (Qwen-Image-Edit 2511 instruction edits of up to three pictures) and
-`video` (Wan 2.2 14B clips, as animated WebP), plus `get_job` for a job still rendering, runs beside
-it and is published at
+drawn by the model), `edit` (Qwen-Image-Edit 2511 instruction edits of up to three pictures),
+`remove_background` (BiRefNet cutouts), `logo` (Qwen-Image 2512, as a transparent PNG and an SVG
+traced by the vtracer CLI that `vtracer:` in `config/comfyui.yaml` pins, as `runtime.ffmpeg` pins
+ffmpeg) and `video` (Wan 2.2 14B clips, as animated WebP), plus `get_job` for a job still rendering,
+runs beside it and is published at
 `https://<api hostname>/mcp`, where it takes its own key, so either key can be rotated
 alone. Deploying it needs `uv` on the machine you deploy from. `https://<api hostname>/upload/`
 takes no key: it accepts only the single-use, 10-minute links that `upload_link` hands out, so a

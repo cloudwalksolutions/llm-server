@@ -39,7 +39,8 @@ async def test_every_tool_that_returns_a_picture_shows_it_in_the_viewer():
         tools = (await client.list_tools()).tools
 
     assert {tool.name: (tool.meta or {}).get("ui", {}).get("resourceUri") for tool in tools} == {
-        **{name: "ui://comfyui/viewer" for name in ("generate", "video", "comic", "edit", "get_job")},
+        **{name: "ui://comfyui/viewer"
+           for name in ("generate", "video", "comic", "edit", "remove_background", "logo", "get_job")},
         "upload_link": None}
 
 
@@ -501,3 +502,103 @@ async def test_a_finished_edit_goes_to_the_viewer_and_names_its_image_id_for_the
     assert not result.isError, result.content[0].text
     assert result.meta["image"]["mimeType"] == "image/png"
     assert 'image_id "edit_00001_.png [output]"' in result.content[0].text
+
+
+async def test_removing_a_background_is_one_job_turning_birefnets_mask_into_alpha():
+    submitted = []
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            submitted.append(json.loads(request.content)["prompt"])
+            return httpx.Response(200, json={"prompt_id": "b1"})
+        return httpx.Response(200, json={})
+
+    await call(fake_comfyui(comfyui), "remove_background", {"image": "upload-abc.png"}, wait=0)
+
+    [job] = submitted
+    [save] = [key for key, node in job.items() if node["class_type"] == "SaveImage"]
+    join = job[job[save]["inputs"]["images"][0]]
+    invert = job[join["inputs"]["alpha"][0]]
+    assert join["class_type"] == "JoinImageWithAlpha"
+    assert job[join["inputs"]["image"][0]]["inputs"]["image"] == "upload-abc.png"
+    assert invert["class_type"] == "InvertMask"
+    assert job[invert["inputs"]["mask"][0]]["class_type"] == "RemoveBackground"
+
+
+async def test_a_cutout_is_shown_and_offered_as_a_png_download_with_its_image_id():
+    png = drawn_panel()
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "b1"})
+        if request.url.path == "/history/b1":
+            return httpx.Response(200, json={"b1": {
+                "status": {"status_str": "success", "messages": []},
+                "prompt": [0, "b1", {}, {}, ["save"]],
+                "outputs": {"save": {"images": [{"filename": "cutout_00001_.png", "subfolder": "", "type": "output"}]}},
+            }})
+        if request.url.path == "/view":
+            return httpx.Response(200, content=png)
+        return httpx.Response(404)
+
+    result = await call(fake_comfyui(comfyui), "remove_background", {"image": "upload-abc.png"})
+
+    [download] = result.meta["downloads"]
+    assert download["name"] == "cutout_00001_.png"
+    assert download["mimeType"] == "image/png"
+    assert base64.b64decode(download["data"]) == png
+    assert 'image_id "cutout_00001_.png [output]"' in result.content[0].text
+
+
+async def test_a_logo_is_one_job_drawing_the_styled_prompt_with_its_text_then_cutting_out_the_background():
+    submitted = []
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            submitted.append(json.loads(request.content))
+            return httpx.Response(200, json={"prompt_id": "l1"})
+        return httpx.Response(200, json={})
+
+    await call(fake_comfyui(comfyui), "logo", {"description": "a coffee cup with steam", "text": "Bean There"}, wait=0)
+
+    [job] = submitted
+    workflow = job["prompt"]
+    [sampler] = [node["inputs"] for node in workflow.values() if node["class_type"] == "KSampler"]
+    [unet] = [node["inputs"] for node in workflow.values() if node["class_type"] == "UNETLoader"]
+    [save] = [node["inputs"] for node in workflow.values() if node["class_type"] == "SaveImage"]
+    prompt = workflow[sampler["positive"][0]]["inputs"]["text"]
+    assert "flat vector logo" in prompt
+    assert prompt.endswith('a coffee cup with steam, with the text "Bean There"')
+    assert unet["unet_name"] == "qwen_image_2512_fp8_e4m3fn.safetensors"
+    assert workflow[save["images"][0]]["class_type"] == "JoinImageWithAlpha"
+    assert job["extra_data"]["logo"] is True
+
+
+async def test_a_finished_logo_is_offered_as_png_and_as_the_svg_traced_from_it():
+    png = drawn_panel()
+    traced = []
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "l1"})
+        if request.url.path == "/history/l1":
+            return httpx.Response(200, json={"l1": {
+                "status": {"status_str": "success", "messages": []},
+                "prompt": [0, "l1", {}, {"logo": True}, ["save"]],
+                "outputs": {"save": {"images": [{"filename": "logo_00001_.png", "subfolder": "", "type": "output"}]}},
+            }})
+        if request.url.path == "/view":
+            return httpx.Response(200, content=png)
+        return httpx.Response(404)
+
+    def vectorize(picture):
+        traced.append(picture)
+        return b"<svg>traced</svg>"
+
+    result = await call(fake_comfyui(comfyui), "logo", {"description": "a rocket"}, vectorize=vectorize)
+
+    assert traced == [png]
+    assert [(download["name"], download["mimeType"], base64.b64decode(download["data"]))
+            for download in result.meta["downloads"]] == [
+        ("logo.png", "image/png", png), ("logo.svg", "image/svg+xml", b"<svg>traced</svg>")]
+    assert 'image_id "logo_00001_.png [output]"' in result.content[0].text
