@@ -84,6 +84,7 @@ render_comfyui_mcp_unit() {
     body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
     body="${body//@API_HOST@/${COMFYUI_API_HOST:-}}"
     body="${body//@VTRACER_DIR@/$VTRACER_DIR}"
+    body="${body//@FFMPEG_DIR@/$FFMPEG_DIR}"
     printf '%s\n' "$body"
 }
 

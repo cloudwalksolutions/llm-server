@@ -256,8 +256,9 @@ An MCP server for ComfyUI, `comfyui-mcp/`, with `generate` (Z-Image Turbo stills
 drawn by the model), `edit` (Qwen-Image-Edit 2511 instruction edits of up to three pictures),
 `remove_background` (BiRefNet cutouts), `logo` (Qwen-Image 2512, as a transparent PNG and an SVG
 traced by the vtracer CLI that `vtracer:` in `config/comfyui.yaml` pins, as `runtime.ffmpeg` pins
-ffmpeg), `video` (Wan 2.2 14B clips, as animated WebP) and `animate` (Wan 2.2 14B image-to-video,
-or first-to-last frame), plus `get_job` for a job still rendering,
+ffmpeg), `video` (Wan 2.2 14B clips, as animated WebP), `animate` (Wan 2.2 14B image-to-video,
+or first-to-last frame) and `talk` (Wan 2.2 S2V talking heads, as MP4 with the sound, timed with
+the pinned ffprobe), plus `get_job` for a job still rendering,
 runs beside it and is published at
 `https://<api hostname>/mcp`, where it takes its own key, so either key can be rotated
 alone. Deploying it needs `uv` on the machine you deploy from. `https://<api hostname>/upload/`

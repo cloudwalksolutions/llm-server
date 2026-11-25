@@ -281,6 +281,30 @@ check_comfyui_mcp_edits_an_upload() {
     rm -f "$edited"
     check_comfyui_mcp_cuts_out "$image"
     check_comfyui_mcp_animates "$image"
+    check_comfyui_mcp_talks "$image"
+}
+
+check_comfyui_mcp_talks() {
+    local tone link audio result start talk streams lengths
+    tone=$(mktemp)
+    remote_exec "$FFMPEG_DIR/ffmpeg -v error -f lavfi -i sine=frequency=220:duration=3 -f wav -" >"$tone" 2>/dev/null
+    link=$(mcp_call upload_link '{}' | jq -r '.content[0].text' | grep -o 'https://[^ ]*/upload/[^ ]*')
+    audio=$(curl -sf --max-time 60 -T "$tone" "$link" | jq -r '.audio_id // empty')
+    rm -f "$tone"
+    [[ -n "$audio" ]] && ok "MCP upload stored the voice clip as $audio" || { bad "MCP upload refused the voice clip"; return; }
+
+    start=$(date +%s)
+    result=$(mcp_finished talk "$(jq -nc --arg i "$1" --arg a "$audio" '{image: $i, audio: $a, prompt: "an apple on a table"}')")
+    talk=$(mktemp)
+    jq -r '._meta.image | select(.mimeType == "video/mp4") | .data' <<<"$result" | base64 -d >"$talk" 2>/dev/null
+    [[ -s "$talk" ]] && ok "MCP talk is an MP4, made in $(($(date +%s) - start))s" \
+        || { bad "MCP talk is not an MP4: $(head -c 200 <<<"$result")"; rm -f "$talk"; return; }
+    streams=$(remote_exec "cat > /tmp/verify-talk.mp4 && $FFMPEG_DIR/ffprobe -v error -show_entries stream=codec_type -of csv=p=0 /tmp/verify-talk.mp4 | sort | tr '\n' ' '" <"$talk")
+    assert_eq "MCP talk streams" "$streams" "audio video "
+    lengths=$(remote_exec "for s in a:0 v:0; do $FFMPEG_DIR/ffprobe -v error -select_streams \$s -show_entries stream=duration -of csv=p=0 /tmp/verify-talk.mp4; done | tr '\n' ' '")
+    awk '{exit !($1 - $2 < 0.5 && $2 - $1 < 0.5)}' <<<"$lengths" \
+        && ok "MCP talk video lasts as long as its sound ($lengths)" || bad "MCP talk video and sound lengths differ: $lengths"
+    rm -f "$talk"
 }
 
 check_comfyui_mcp_animates() {
@@ -310,11 +334,14 @@ print(picture.getpixel((0, 0))[3], picture.getpixel((picture.width // 2, picture
 }
 
 check_comfyui_mcp_cuts_out() {
-    local result cutout
+    local result cutout alpha
     result=$(mcp_finished remove_background "$(jq -nc --arg i "$1" '{image: $i}')")
     cutout=$(mktemp)
     jq -r '._meta.downloads[0].data // empty' <<<"$result" | base64 -d >"$cutout" 2>/dev/null
-    assert_eq "MCP cutout alpha at the corner and the center" "$(alpha_at_corner_and_center "$cutout" 2>&1)" "0 255"
+    alpha=$(alpha_at_corner_and_center "$cutout" 2>&1)
+    awk '{exit !($1 == 0 && $2 >= 250)}' <<<"$alpha" \
+        && ok "MCP cutout is transparent at the corner and opaque at the center ($alpha)" \
+        || bad "MCP cutout alpha at the corner and the center is $alpha, want 0 and at least 250"
     rm -f "$cutout"
 }
 

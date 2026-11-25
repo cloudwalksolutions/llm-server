@@ -109,3 +109,13 @@ models:
     file: split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
     dest: loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
     sha256: 024f21de095bc8fad9809ded3e9e49a2e170dcf27075da8145ba7d60d8aab7f9
+  - repo: Comfy-Org/Wan-2.2
+    revision: 5df3a4a3ed0628002308022198249dbbbd045d09
+    file: split_files/diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors
+    dest: diffusion_models/wan2.2_s2v_14B_fp8_scaled.safetensors
+    sha256: 140e75af5534ac3d91e710d9df756f7032addd64b341ba2c1c70e3e6da9aa216
+  - repo: Comfy-Org/Wan-2.2
+    revision: 5df3a4a3ed0628002308022198249dbbbd045d09
+    file: split_files/audio_encoders/wav2vec2_large_english_fp16.safetensors
+    dest: audio_encoders/wav2vec2_large_english_fp16.safetensors
+    sha256: f0017a43ea57ef6b3d4866be607844bbd8cada6d30966f7d70044ed0d63d3f9e
