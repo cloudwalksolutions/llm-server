@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <style>
   html, body { margin: 0; background: transparent; }
-  img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+  img, video { display: block; max-width: 100%; height: auto; border-radius: 8px; }
   #downloads { display: flex; gap: 12px; margin-top: 8px; font: 14px system-ui, sans-serif; }
   #downloads a { color: #2563eb; }
   @media (prefers-color-scheme: dark) { #downloads a { color: #93c5fd; } }
@@ -33,7 +33,15 @@
     }
     if (data.method === "ui/notifications/tool-result") {
       const image = data.params?._meta?.image;
-      if (image) picture.src = `data:${image.mimeType};base64,${image.data}`;
+      if (image?.mimeType.startsWith("video/")) {
+        const video = document.createElement("video");
+        video.controls = video.autoplay = true;
+        video.src = `data:${image.mimeType};base64,${image.data}`;
+        video.addEventListener("loadedmetadata", reportSize);
+        picture.replaceWith(video);
+      } else if (image) {
+        picture.src = `data:${image.mimeType};base64,${image.data}`;
+      }
       for (const file of data.params?._meta?.downloads ?? []) {
         const link = document.createElement("a");
         link.href = `data:${file.mimeType};base64,${file.data}`;

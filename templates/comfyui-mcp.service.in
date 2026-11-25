@@ -10,6 +10,7 @@ Environment=COMFYUI_URL=http://127.0.0.1:@COMFYUI_PORT@
 Environment=MCP_PORT=@MCP_PORT@
 Environment=PUBLIC_URL=https://@API_HOST@
 Environment=VTRACER=@VTRACER_DIR@/vtracer
+Environment=FFPROBE=@FFMPEG_DIR@/ffprobe
 ExecStart=@MCP_DIR@/.venv/bin/python @MCP_DIR@/server.py
 Restart=on-failure
 

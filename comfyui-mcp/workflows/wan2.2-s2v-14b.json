@@ -1,0 +1,28 @@
+{
+  "shared": {
+    "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "wan2.2_s2v_14B_fp8_scaled.safetensors", "weight_dtype": "default"}},
+    "lora": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["unet", 0], "lora_name": "wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors", "strength_model": 1}},
+    "sampling": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["lora", 0], "shift": 8}},
+    "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan", "device": "default"}},
+    "positive": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": ""}},
+    "negative": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"}},
+    "vae": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
+    "face": {"class_type": "LoadImage", "inputs": {"image": ""}},
+    "voice": {"class_type": "LoadAudio", "inputs": {"audio": ""}},
+    "encoder": {"class_type": "AudioEncoderLoader", "inputs": {"audio_encoder_name": "wav2vec2_large_english_fp16.safetensors"}},
+    "encoded": {"class_type": "AudioEncoderEncode", "inputs": {"audio_encoder": ["encoder", 0], "audio": ["voice", 0]}},
+    "sound": {"class_type": "WanSoundImageToVideo", "inputs": {"positive": ["positive", 0], "negative": ["negative", 0], "vae": ["vae", 0], "width": 640, "height": 640, "length": 77, "batch_size": 1, "audio_encoder_output": ["encoded", 0], "ref_image": ["face", 0]}},
+    "sampler": {"class_type": "KSampler", "inputs": {"model": ["sampling", 0], "positive": ["sound", 0], "negative": ["sound", 1], "latent_image": ["sound", 2], "seed": 0, "steps": 4, "cfg": 1, "sampler_name": "uni_pc", "scheduler": "simple", "denoise": 1}},
+    "first": {"class_type": "LatentCut", "inputs": {"samples": ["sampler", 0], "dim": "t", "index": 0, "amount": 1}},
+    "doubled": {"class_type": "LatentConcat", "inputs": {"samples1": ["first", 0], "samples2": ["sampler", 0], "dim": "t"}},
+    "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["doubled", 0], "vae": ["vae", 0]}},
+    "trimmed": {"class_type": "ImageFromBatch", "inputs": {"image": ["decode", 0], "batch_index": 1, "length": 4096}},
+    "video": {"class_type": "CreateVideo", "inputs": {"images": ["trimmed", 0], "fps": 16, "audio": ["voice", 0]}},
+    "9": {"class_type": "SaveVideo", "inputs": {"video": ["video", 0], "filename_prefix": "talk", "format": "mp4", "codec": "auto"}}
+  },
+  "extend": {
+    "extend": {"class_type": "WanSoundImageToVideoExtend", "inputs": {"positive": ["positive", 0], "negative": ["negative", 0], "vae": ["vae", 0], "length": 77, "video_latent": ["sampler", 0], "audio_encoder_output": ["encoded", 0], "ref_image": ["face", 0]}},
+    "extend_sampler": {"class_type": "KSampler", "inputs": {"model": ["sampling", 0], "positive": ["extend", 0], "negative": ["extend", 1], "latent_image": ["extend", 2], "seed": 0, "steps": 4, "cfg": 1, "sampler_name": "uni_pc", "scheduler": "simple", "denoise": 1}},
+    "joined": {"class_type": "LatentConcat", "inputs": {"samples1": ["sampler", 0], "samples2": ["extend_sampler", 0], "dim": "t"}}
+  }
+}

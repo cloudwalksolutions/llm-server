@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import re
+import wave
 
 import httpx
 import PIL.Image
@@ -15,6 +16,7 @@ pytestmark = pytest.mark.anyio
 
 PUBLIC_URL = "https://comfy.example.com"
 WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8X animated"
+MP4 = b"\x00\x00\x00\x20ftypisom video with sound"
 
 
 @pytest.fixture
@@ -27,6 +29,16 @@ def picture(width=1024, height=1024):
     PIL.ImageDraw.Draw(drawn).ellipse((width // 3, height // 3, width // 2, height // 2), outline="black", width=8)
     file = io.BytesIO()
     drawn.save(file, "PNG")
+    return file.getvalue()
+
+
+def voice(seconds):
+    file = io.BytesIO()
+    with wave.open(file, "wb") as clip:
+        clip.setnchannels(1)
+        clip.setsampwidth(2)
+        clip.setframerate(16000)
+        clip.writeframes(b"\0\0" * 16000 * seconds)
     return file.getvalue()
 
 
@@ -64,7 +76,8 @@ class FakeComfyUI:
                 return httpx.Response(200, json={})
             return httpx.Response(200, json={job_id: self.history(job_id)})
         if path == "/view":
-            return httpx.Response(200, content=WEBP if request.url.params["filename"].endswith(".webp") else self.picture)
+            extension = request.url.params["filename"].rsplit(".", 1)[-1]
+            return httpx.Response(200, content={"webp": WEBP, "mp4": MP4}.get(extension, self.picture))
         if path == "/upload/image":
             self.stored.append(request.content)
             name = re.search(rb'filename="([^"]+)"', request.content).group(1).decode()
@@ -86,7 +99,7 @@ class FakeComfyUI:
 
 
 def saved_name(node):
-    extension = "webp" if node["class_type"] == "SaveAnimatedWEBP" else "png"
+    extension = {"SaveAnimatedWEBP": "webp", "SaveVideo": "mp4"}.get(node["class_type"], "png")
     return f"{node['inputs']['filename_prefix']}_00001_.{extension}"
 
 
@@ -129,7 +142,8 @@ async def test_every_tool_that_returns_a_picture_shows_it_in_the_viewer():
 
     assert {tool.name: (tool.meta or {}).get("ui", {}).get("resourceUri") for tool in tools} == {
         **{name: "ui://comfyui/viewer"
-           for name in ("generate", "video", "comic", "edit", "remove_background", "logo", "animate", "get_job")},
+           for name in ("generate", "video", "comic", "edit", "remove_background", "logo", "animate", "talk",
+                        "get_job")},
         "upload_link": None}
 
 
@@ -358,6 +372,30 @@ async def test_an_upload_to_a_made_up_link_or_of_something_not_a_picture_is_refu
     assert comfyui.stored == []
 
 
+async def test_an_uploaded_voice_clip_is_stored_as_it_is_and_named_by_its_audio_id():
+    comfyui = FakeComfyUI()
+    server = build_server(comfyui.client, public_url=PUBLIC_URL)
+    path = await upload_path(server)
+
+    response = await put(server, path, voice(seconds=3))
+
+    assert response.status_code == 200
+    assert re.fullmatch(r"upload-[\w-]+\.wav \[input\]", response.json()["audio_id"])
+    assert comfyui.stored[0].count(voice(seconds=3)) == 1
+
+
+@pytest.mark.parametrize("header, extension", [
+    (b"ID3\x04\x00", "mp3"), (b"\xff\xfb\x90\x00", "mp3"), (b"\x00\x00\x00\x20ftypM4A ", "m4a"),
+    (b"OggS\x00\x02", "ogg"), (b"\x1a\x45\xdf\xa3\x9f\x42", "webm"), (b"fLaC\x00\x00", "flac")])
+async def test_a_voice_clip_keeps_the_extension_its_recorder_gave_it(header, extension):
+    server = build_server(FakeComfyUI().client, public_url=PUBLIC_URL)
+    path = await upload_path(server)
+
+    response = await put(server, path, header + b"\0" * 64)
+
+    assert response.json()["audio_id"].endswith(f".{extension} [input]")
+
+
 async def test_an_upload_link_older_than_ten_minutes_is_refused():
     now = [0.0]
     comfyui = FakeComfyUI()
@@ -521,3 +559,85 @@ async def test_animating_while_a_clip_renders_returns_that_clip_instead_of_start
 
     assert comfyui.submitted == []
     assert 'job_id "v1"' in text(result)
+
+
+async def talk(comfyui, seconds=3.0, **arguments):
+    talking = {"image": "upload-face.png", "audio": "upload-voice.wav [input]", "prompt": "a woman speaking warmly"}
+    return await call("talk", {**talking, **arguments}, comfyui, audio_seconds=lambda clip: seconds)
+
+
+async def test_talking_is_one_job_lip_syncing_the_face_to_the_voice_at_the_templates_four_steps():
+    comfyui = FakeComfyUI(finished=False)
+
+    await talk(comfyui)
+
+    [sound] = nodes_of(comfyui.job, "WanSoundImageToVideo")
+    [sampler] = nodes_of(comfyui.job, "KSampler")
+    encoded = source(comfyui.job, sound["audio_encoder_output"])["inputs"]
+    assert source(comfyui.job, sound["ref_image"])["inputs"]["image"] == "upload-face.png"
+    assert source(comfyui.job, encoded["audio"])["inputs"]["audio"] == "upload-voice.wav"
+    assert source(comfyui.job, sound["positive"])["inputs"]["text"] == "a woman speaking warmly"
+    assert [unet["unet_name"] for unet in nodes_of(comfyui.job, "UNETLoader")] == ["wan2.2_s2v_14B_fp8_scaled.safetensors"]
+    assert (sampler["steps"], sampler["cfg"]) == (4, 1)
+
+
+async def test_the_voice_clips_length_decides_how_many_chunks_are_drawn_up_to_two():
+    short, long, too_long = (FakeComfyUI(finished=False) for _ in range(3))
+
+    await talk(short, seconds=3.0)
+    await talk(long, seconds=7.0)
+    refusal = await talk(too_long, seconds=12.0)
+
+    assert len(nodes_of(short.job, "WanSoundImageToVideoExtend")) == 0
+    assert len(nodes_of(long.job, "WanSoundImageToVideoExtend")) == 1
+    assert [trim["batch_index"] for trim in nodes_of(short.job, "ImageFromBatch")] == [1]
+    assert [trim["batch_index"] for trim in nodes_of(long.job, "ImageFromBatch")] == [2]
+    assert refused(refusal, "9.6")
+    assert too_long.submitted == []
+
+
+async def test_a_finished_talking_head_plays_in_the_viewer_with_its_sound_and_can_be_downloaded():
+    comfyui = FakeComfyUI()
+
+    result = await talk(comfyui)
+
+    assert shown(result) == ("video/mp4", MP4)
+    assert downloads(result) == [("talk_00001_.mp4", "video/mp4", MP4)]
+
+
+async def test_a_talking_head_rendering_counts_as_the_one_clip_at_a_time():
+    comfyui = FakeComfyUI(finished=False)
+    await talk(comfyui)
+
+    result = await call("video", {"prompt": "waves"}, comfyui)
+
+    assert len(comfyui.submitted) == 1
+    assert 'job_id "job-1"' in text(result)
+
+
+async def test_talking_while_a_clip_renders_returns_that_clip_instead_of_starting_another():
+    comfyui = FakeComfyUI(running=[("v1", json.loads(VIDEO_WORKFLOW.read_text()))], finished=False)
+
+    result = await talk(comfyui)
+
+    assert comfyui.submitted == []
+    assert 'job_id "v1"' in text(result)
+
+
+async def test_a_talking_head_ends_when_its_voice_clip_does():
+    comfyui = FakeComfyUI(finished=False)
+
+    await talk(comfyui, seconds=3.0)
+
+    [trim] = nodes_of(comfyui.job, "ImageFromBatch")
+    [video] = nodes_of(comfyui.job, "CreateVideo")
+    assert trim["length"] / video["fps"] == 3.0
+
+
+async def test_a_talking_head_keeps_the_faces_orientation():
+    portrait = FakeComfyUI(picture=picture(768, 1024), finished=False)
+
+    await talk(portrait)
+
+    [sound] = nodes_of(portrait.job, "WanSoundImageToVideo")
+    assert (sound["width"], sound["height"]) == (480, 832)

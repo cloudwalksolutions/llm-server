@@ -24,6 +24,9 @@ from starlette.responses import JSONResponse
 
 WORKFLOW = Path(__file__).parent / "workflows" / "z-image-turbo.api.json"
 VIDEO_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-t2v-14b.api.json"
+TALK_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-s2v-14b.json"
+TALK_CHUNK_SECONDS = 77 / 16
+TALK_CHUNKS = 2
 ANIMATE_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-i2v-14b.api.json"
 COMIC_WORKFLOW = Path(__file__).parent / "workflows" / "qwen-image-2512-comic.json"
 COMIC_STYLE = ("Black-and-white xkcd-style stick figure comic panel, simple thin black line art, "
@@ -179,7 +182,7 @@ async def queued(comfyui, prompt_id):
 
 async def rendering_video(comfyui):
     return next((job[1] for job in await jobs(comfyui)
-                 if any(node["class_type"] == "SaveAnimatedWEBP" for node in job[2].values())), None)
+                 if any(node["class_type"] in ("SaveAnimatedWEBP", "SaveVideo") for node in job[2].values())), None)
 
 
 async def fetch(comfyui, file):
@@ -190,6 +193,16 @@ async def fetch(comfyui, file):
 
 def image_id(image):
     return f"{image['filename']} [{image['type']}]"
+
+
+def audio_extension(body):
+    if body[:4] == b"RIFF" and body[8:12] == b"WAVE":
+        return "wav"
+    if body[4:8] == b"ftyp":
+        return "m4a"
+    if body[:3] == b"ID3" or (body[:1] == b"\xff" and body[1] & 0xE0 == 0xE0):
+        return "mp3"
+    return {b"OggS": "ogg", b"\x1a\x45\xdf\xa3": "webm", b"fLaC": "flac"}.get(body[:4])
 
 
 def stored_file(image):
@@ -233,13 +246,23 @@ def traced_svg(png):
         return svg.read_bytes()
 
 
-def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectorize=traced_svg, **settings):
+def probed_seconds(clip):
+    with tempfile.NamedTemporaryFile() as file:
+        file.write(clip)
+        file.flush()
+        probe = subprocess.run([os.environ["FFPROBE"], "-v", "error", "-show_entries", "format=duration",
+                                "-of", "csv=p=0", file.name], check=True, capture_output=True, text=True)
+    return float(probe.stdout)
+
+
+def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectorize=traced_svg,
+                 audio_seconds=probed_seconds, **settings):
     mcp = FastMCP("comfyui", stateless_http=True, **settings)
     links = {}
 
     @mcp.tool()
     async def upload_link():
-        """Get a single-use link that puts a picture the user attached into these tools. Run the returned command in the terminal with <file> replaced by the attachment's path (attachments are in the chat's working directory). It prints the picture's image_id, which edit takes. The link works once, for 10 minutes."""
+        """Get a single-use link that puts a picture or a voice clip the user attached into these tools. Run the returned command in the terminal with <file> replaced by the attachment's path (attachments are in the chat's working directory). It prints the picture's image_id, or the voice clip's audio_id, which the other tools take. Each link works once, for 10 minutes: get one per file."""
         token = secrets.token_urlsafe(32)
         links[token] = clock() + UPLOAD_LINK_SECONDS
         return f"curl -sf -T <file> {public_url}/upload/{token}"
@@ -249,12 +272,15 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectori
         token = request.path_params["token"]
         if links.pop(token, -math.inf) < clock():
             return JSONResponse({"error": "This link is unknown or already used. Call upload_link again."}, 403)
+        body = await request.body()
+        if extension := audio_extension(body):
+            return JSONResponse({"audio_id": await store(comfyui, body, f"upload-{token}.{extension}")})
         try:
-            picture = PIL.Image.open(io.BytesIO(await request.body()))
+            picture = PIL.Image.open(io.BytesIO(body))
             png = io.BytesIO()
             picture.save(png, "PNG")
         except (PIL.UnidentifiedImageError, OSError):
-            return JSONResponse({"error": "That file is not a picture."}, 400)
+            return JSONResponse({"error": "That file is neither a picture nor a voice clip."}, 400)
         return JSONResponse({"image_id": await store(comfyui, png.getvalue(), f"upload-{token}.png")})
 
     @mcp.resource(VIEWER["ui"]["resourceUri"], mime_type="text/html;profile=mcp-app")
@@ -271,6 +297,10 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectori
         entry = await finished_within(comfyui, await submit(comfyui, workflow), math.inf)
         [image] = entry["outputs"]["10"]["images"]
         return shown(await fetch(comfyui, image), "image/png", image_id(image))
+
+    async def clip_size(image, resolution):
+        width, height = PIL.Image.open(io.BytesIO(await fetch(comfyui, stored_file(image)))).size
+        return ANIMATE_SIZES[resolution][orientation(width, height)]
 
     async def result_or_pending(job_id):
         entry = await finished_within(comfyui, job_id, wait)
@@ -290,6 +320,9 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectori
                                                                  encoded(svg, "image/svg+xml", name="logo.svg")])
             return shown(png, "image/png", image_id(image), [encoded(png, "image/png", name=image["filename"])])
         [clip] = entry["outputs"]["9"]["images"]
+        if clip["filename"].endswith(".mp4"):
+            video = await fetch(comfyui, clip)
+            return shown(video, "video/mp4", downloads=[encoded(video, "video/mp4", name=clip["filename"])])
         return shown(await fetch(comfyui, clip), "image/webp")
 
     @mcp.tool(meta=VIEWER)
@@ -337,17 +370,42 @@ def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, vectori
         """Animate a picture into a short silent clip: pass its image_id (from a picture these tools made, or from upload_link) and describe the motion and camera, not the scene, which the picture already sets. Give last_image to move from the first picture to another, a transition; pass the same image_id as both for a seamless loop. The clip keeps the picture's orientation, at 480p or, only when asked, 720p. At 480p a 1 second clip takes about 2 minutes and a 2 second clip about 7. Returns the clip, or a job_id for get_job. Calling it while a clip renders returns that clip's job instead of starting another."""
         if running := await rendering_video(comfyui):
             return await result_or_pending(running)
-        width, height = PIL.Image.open(io.BytesIO(await fetch(comfyui, stored_file(image)))).size
+        width, height = await clip_size(image, resolution)
         workflow = json.loads(ANIMATE_WORKFLOW.read_text())
         workflow["5"]["inputs"]["text"] = prompt
         workflow["16"]["inputs"]["image"] = image
-        workflow["7"]["inputs"].update(zip(("width", "height"), ANIMATE_SIZES[resolution][orientation(width, height)]),
-                                       length=24 * seconds + 1)
+        workflow["7"]["inputs"].update(width=width, height=height, length=24 * seconds + 1)
         if last_image:
             workflow["17"] = {"class_type": "LoadImage", "inputs": {"image": last_image}}
             workflow["7"]["class_type"] = "WanFirstLastFrameToVideo"
             workflow["7"]["inputs"]["end_image"] = ["17", 0]
         workflow["8"]["inputs"]["noise_seed"] = random.randrange(2**32)
+        return await result_or_pending(await submit(comfyui, workflow))
+
+    @mcp.tool(meta=VIEWER)
+    async def talk(image: str, audio: str, prompt: str):
+        """Make a talking head: the person in a picture speaks a voice clip, lip-synced, as a video with the sound. Pass the face picture's image_id, the voice clip's audio_id (both from upload_link, or the picture from these tools), and a short description of the scene and expression. The clip may be up to about 9.6 seconds; each 4.8 seconds takes several minutes. Returns the video, which the user can download, or a job_id for get_job. Calling it while a clip renders returns that clip's job instead of starting another."""
+        if running := await rendering_video(comfyui):
+            return await result_or_pending(running)
+        seconds =await asyncio.to_thread(audio_seconds, await fetch(comfyui, stored_file(audio)))
+        chunks = math.ceil(seconds / TALK_CHUNK_SECONDS)
+        if chunks > TALK_CHUNKS:
+            raise ComfyUIError(f"The voice clip is {seconds:.1f} s; talk takes about "
+                               f"{TALK_CHUNKS * TALK_CHUNK_SECONDS:.1f} s at most. Trim the clip.")
+        template = json.loads(TALK_WORKFLOW.read_text())
+        workflow = template["shared"]
+        if chunks == 2:
+            workflow.update(template["extend"])
+            workflow["first"]["inputs"]["samples"] = workflow["doubled"]["inputs"]["samples2"] = ["joined", 0]
+            workflow["extend_sampler"]["inputs"]["seed"] = random.randrange(2**32)
+        workflow["trimmed"]["inputs"].update(batch_index=chunks,
+                                             length=round(seconds * workflow["video"]["inputs"]["fps"]))
+        workflow["face"]["inputs"]["image"] = image
+        width, height = await clip_size(image, "480p")
+        workflow["sound"]["inputs"].update(width=width, height=height)
+        workflow["voice"]["inputs"]["audio"] = stored_file(audio)["filename"]
+        workflow["positive"]["inputs"]["text"] = prompt
+        workflow["sampler"]["inputs"]["seed"] = random.randrange(2**32)
         return await result_or_pending(await submit(comfyui, workflow))
 
     @mcp.tool(meta=VIEWER)
