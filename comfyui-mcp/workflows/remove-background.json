@@ -1,0 +1,8 @@
+{
+  "load": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "model": {"class_type": "LoadBackgroundRemovalModel", "inputs": {"bg_removal_name": "birefnet.safetensors"}},
+  "mask": {"class_type": "RemoveBackground", "inputs": {"bg_removal_model": ["model", 0], "image": ["load", 0]}},
+  "invert": {"class_type": "InvertMask", "inputs": {"mask": ["mask", 0]}},
+  "join": {"class_type": "JoinImageWithAlpha", "inputs": {"image": ["load", 0], "alpha": ["invert", 0]}},
+  "save": {"class_type": "SaveImage", "inputs": {"images": ["join", 0], "filename_prefix": "cutout"}}
+}

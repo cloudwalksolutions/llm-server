@@ -8,7 +8,10 @@ ui_port: 8190               # COMFYUI_UI_HOST's tunnel route; no key, so gate th
 mcp_port: 8191              # the MCP server, on loopback; reached at COMFYUI_API_HOST/mcp with COMFYUI_MCP_KEY
 container_image: registry.example/amd-strix-halo-comfyui:tag
 dir: /opt/llm/comfyui
-models:                     # each lands at <dir>/models/<dest>, refused unless its sha256 matches
+vtracer:                    # the static vtracer CLI the logo tool traces SVGs with, installed in <dir>/vtracer
+  url: https://example.com/vtracer-x86_64-unknown-linux-musl.tar.gz
+  sha256: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+models:                   # each lands at <dir>/models/<dest>, refused unless its sha256 matches
   - repo: org/repo          # Hugging Face, pinned by commit
     revision: 0123456789abcdef0123456789abcdef01234567
     file: split_files/vae/ae.safetensors

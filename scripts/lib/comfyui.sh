@@ -23,6 +23,11 @@ load_comfyui() {
     COMFYUI_IMAGE=$(yq '.container_image' "$COMFYUI_CONFIG")
     COMFYUI_DIR=$(yq '.dir' "$COMFYUI_CONFIG")
     COMFYUI_MCP_DIR="$COMFYUI_DIR/mcp"
+    VTRACER_DIR="$COMFYUI_DIR/vtracer"
+    VTRACER_URL=$(yq '.vtracer.url' "$COMFYUI_CONFIG")
+    VTRACER_SHA256=$(yq '.vtracer.sha256' "$COMFYUI_CONFIG")
+    _require_match "comfyui vtracer.url" "$VTRACER_URL" '^https://[^[:space:]]+$' || return 1
+    _require_match "comfyui vtracer.sha256" "$VTRACER_SHA256" '^[0-9a-f]{64}$' || return 1
     _require_enum "comfyui enabled" "$COMFYUI_ENABLED" true false || return 1
     _require_int "comfyui port" "$COMFYUI_PORT" || return 1
     _require_int "comfyui api_port" "$COMFYUI_API_PORT" || return 1
@@ -78,6 +83,7 @@ render_comfyui_mcp_unit() {
     body="${body//@MCP_PORT@/$COMFYUI_MCP_PORT}"
     body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
     body="${body//@API_HOST@/${COMFYUI_API_HOST:-}}"
+    body="${body//@VTRACER_DIR@/$VTRACER_DIR}"
     printf '%s\n' "$body"
 }
 
