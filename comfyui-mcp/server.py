@@ -5,24 +5,29 @@ import json
 import math
 import os
 import random
+import secrets
 import time
 from pathlib import Path
 from typing import Annotated, Literal
 
 import httpx
+import PIL
 import PIL.Image
 import PIL.ImageDraw
 import PIL.ImageFont
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, Field
+from starlette.responses import JSONResponse
 
 WORKFLOW = Path(__file__).parent / "workflows" / "z-image-turbo.api.json"
 VIDEO_WORKFLOW = Path(__file__).parent / "workflows" / "wan2.2-t2v-14b.api.json"
 COMIC_WORKFLOW = Path(__file__).parent / "workflows" / "qwen-image-2512-comic.json"
 COMIC_STYLE = ("Black-and-white xkcd-style stick figure comic panel, simple thin black line art, "
                "plain white background, no text, no letters. ")
-COMIC_FONT = Path(__file__).parent / "fonts" / "Humor-Sans.ttf"
+UPLOAD_LINK_SECONDS = 600
+EDIT_WORKFLOW =Path(__file__).parent / "workflows" / "qwen-image-edit-2511.json"
+COMIC_FONT =Path(__file__).parent / "fonts" / "Humor-Sans.ttf"
 COMIC_PANEL = 400
 COMIC_PAD = 12
 COMIC_LINE = 30
@@ -64,6 +69,19 @@ def comic_workflow(panels):
             workflow[f"{number}.{key}"] = {**node, "inputs": {name: own(value) for name, value in node["inputs"].items()}}
         workflow[f"{number}.positive"]["inputs"]["text"] = COMIC_STYLE + panel.scene
         workflow[f"{number}.sampler"]["inputs"]["seed"] = random.randrange(2**32)
+    return workflow
+
+
+def edit_workflow(prompt, images):
+    template = json.loads(EDIT_WORKFLOW.read_text())
+    workflow = dict(template["shared"])
+    for number, image in enumerate(images, start=1):
+        workflow[f"{number}.load"] = {**template["image"]["load"], "inputs": {"image": image}}
+        workflow[f"{number}.scale"] = {**template["image"]["scale"], "inputs": {"image": [f"{number}.load", 0]}}
+        for encoder in ("positive", "negative"):
+            workflow[encoder]["inputs"][f"image{number}"] = [f"{number}.scale", 0]
+    workflow["positive"]["inputs"]["prompt"] = prompt
+    workflow["sampler"]["inputs"]["seed"] = random.randrange(2**32)
     return workflow
 
 
@@ -145,15 +163,49 @@ async def fetch(comfyui, file):
     return response.content
 
 
-def shown(data, mime_type):
+def image_id(image):
+    return f"{image['filename']} [{image['type']}]"
+
+
+async def store(comfyui, png, name):
+    response = await comfyui.post("/upload/image", files={"image": (name, png, "image/png")},
+                                  data={"overwrite": "true"})
+    response.raise_for_status()
+    stored = response.json()
+    return image_id({"filename": stored["name"], "type": stored["type"]})
+
+
+def shown(data, mime_type, image=None):
+    text = SHOWN if image is None else f'{SHOWN} To change it, pass its image_id "{image}" to edit.'
     return CallToolResult(
-        content=[TextContent(type="text", text=SHOWN)],
+        content=[TextContent(type="text", text=text)],
         _meta={"image": {"mimeType": mime_type, "data": base64.b64encode(data).decode()}},
     )
 
 
-def build_server(comfyui, wait=120, **settings):
+def build_server(comfyui, wait=120, public_url="", clock=time.monotonic, **settings):
     mcp = FastMCP("comfyui", stateless_http=True, **settings)
+    links = {}
+
+    @mcp.tool()
+    async def upload_link():
+        """Get a single-use link that puts a picture the user attached into these tools. Run the returned command in the terminal with <file> replaced by the attachment's path (attachments are in the chat's working directory). It prints the picture's image_id, which edit takes. The link works once, for 10 minutes."""
+        token = secrets.token_urlsafe(32)
+        links[token] = clock() + UPLOAD_LINK_SECONDS
+        return f"curl -sf -T <file> {public_url}/upload/{token}"
+
+    @mcp.custom_route("/upload/{token}", methods=["PUT"])
+    async def receive_upload(request):
+        token = request.path_params["token"]
+        if links.pop(token, -math.inf) < clock():
+            return JSONResponse({"error": "This link is unknown or already used. Call upload_link again."}, 403)
+        try:
+            picture = PIL.Image.open(io.BytesIO(await request.body()))
+            png = io.BytesIO()
+            picture.save(png, "PNG")
+        except (PIL.UnidentifiedImageError, OSError):
+            return JSONResponse({"error": "That file is not a picture."}, 400)
+        return JSONResponse({"image_id": await store(comfyui, png.getvalue(), f"upload-{token}.png")})
 
     @mcp.resource(VIEWER["ui"]["resourceUri"], mime_type="text/html;profile=mcp-app")
     def viewer():
@@ -168,7 +220,7 @@ def build_server(comfyui, wait=120, **settings):
         workflow["8"]["inputs"]["seed"] = random.randrange(2**32)
         entry = await finished_within(comfyui, await submit(comfyui, workflow), math.inf)
         [image] = entry["outputs"]["10"]["images"]
-        return shown(await fetch(comfyui, image), "image/png")
+        return shown(await fetch(comfyui, image), "image/png", image_id(image))
 
     async def result_or_pending(job_id):
         entry = await finished_within(comfyui, job_id, wait)
@@ -177,7 +229,11 @@ def build_server(comfyui, wait=120, **settings):
         if comic := entry["prompt"][3].get("comic"):
             pictures = [await fetch(comfyui, entry["outputs"][f"{number}.save"]["images"][0])
                         for number in range(len(comic["panels"]))]
-            return shown(compose(comic, pictures), "image/png")
+            strip = compose(comic, pictures)
+            return shown(strip, "image/png", await store(comfyui, strip, f"comic-{job_id}.png"))
+        if "save" in entry["outputs"]:
+            [image] = entry["outputs"]["save"]["images"]
+            return shown(await fetch(comfyui, image), "image/png", image_id(image))
         [clip] = entry["outputs"]["9"]["images"]
         return shown(await fetch(comfyui, clip), "image/webp")
 
@@ -204,10 +260,15 @@ def build_server(comfyui, wait=120, **settings):
         return await result_or_pending(await submit(comfyui, comic_workflow(panels), comic=comic))
 
     @mcp.tool(meta=VIEWER)
+    async def edit(prompt: str, images: Annotated[list[str], Field(min_length=1, max_length=3)]):
+        """Edit pictures by instruction: change the background, outfit, lighting or style, add or remove an object, restore or colorize an old photo, or combine pictures ("put the person in image 1 into the scene in image 2"). Pass up to 3 image_ids: one from a picture these tools made, or from upload_link for a picture the user attached. The result keeps the first picture's composition. Returns the picture and its new image_id, or a job_id for get_job if it is still rendering (about a minute)."""
+        return await result_or_pending(await submit(comfyui, edit_workflow(prompt, images)))
+
+    @mcp.tool(meta=VIEWER)
     async def get_job(job_id: str):
-        """Get a clip or comic that video or comic started, using the job_id it returned. It cannot start one: to make one, call video or comic."""
+        """Get a clip, comic or edit that video, comic or edit started, using the job_id it returned. It cannot start one: to make one, call that tool."""
         if not (await queued(comfyui, job_id) or (await comfyui.get(f"/history/{job_id}")).json()):
-            raise ComfyUIError(f'There is no job "{job_id}". Call video or comic to start one.')
+            raise ComfyUIError(f'There is no job "{job_id}". Call video, comic or edit to start one.')
         return await result_or_pending(job_id)
 
     return mcp
@@ -215,4 +276,4 @@ def build_server(comfyui, wait=120, **settings):
 
 if __name__ == "__main__":
     comfyui = httpx.AsyncClient(base_url=os.environ["COMFYUI_URL"], timeout=60)
-    build_server(comfyui, port=int(os.environ["MCP_PORT"])).run("streamable-http")
+    build_server(comfyui, public_url=os.environ["PUBLIC_URL"], port=int(os.environ["MCP_PORT"])).run("streamable-http")

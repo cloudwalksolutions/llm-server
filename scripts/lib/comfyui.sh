@@ -77,6 +77,7 @@ render_comfyui_mcp_unit() {
     body="${body//@MCP_DIR@/$COMFYUI_MCP_DIR}"
     body="${body//@MCP_PORT@/$COMFYUI_MCP_PORT}"
     body="${body//@COMFYUI_PORT@/$COMFYUI_PORT}"
+    body="${body//@API_HOST@/${COMFYUI_API_HOST:-}}"
     printf '%s\n' "$body"
 }
 

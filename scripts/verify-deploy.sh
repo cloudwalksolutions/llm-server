@@ -253,10 +253,32 @@ check_comfyui_mcp_generates() {
     assert_real_256_png "MCP generate" "$file"
     assert_router_model_sees "MCP generate shows its prompt" "$file" \
         "Record in one word the main object in this picture." 'APPLES?'
+    check_comfyui_mcp_edits_an_upload "$file"
     rm -f "$file"
 
     assert_eq "MCP viewer, which shows the picture in the chat" \
         "$(mcp_rpc resources/read '{"uri":"ui://comfyui/viewer"}' | jq -r '.contents[0].mimeType')" "text/html;profile=mcp-app"
+}
+
+check_comfyui_mcp_edits_an_upload() {
+    local picture="$1" link image result edited
+    link=$(mcp_call upload_link '{}' | jq -r '.content[0].text' | grep -o 'https://[^ ]*/upload/[^ ]*')
+    [[ -n "$link" ]] || { bad "MCP upload_link gave no link"; return; }
+    image=$(curl -sf --max-time 60 -T "$picture" "$link" | jq -r '.image_id // empty')
+    [[ -n "$image" ]] && ok "MCP upload stored the picture as $image" || { bad "MCP upload was refused"; return; }
+    assert_eq "MCP upload link used twice" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -T "$picture" "$link")" 403
+
+    result=$(mcp_finished edit "$(jq -nc --arg i "$image" '{prompt: "make the apple bright blue", images: [$i]}')")
+    edited=$(mktemp)
+    jq -r '._meta.image | select(.mimeType == "image/png") | .data' <<<"$result" | base64 -d >"$edited" 2>/dev/null
+    if [[ "$(xxd -p -l 8 "$edited")" == 89504e470d0a1a0a ]]; then
+        ok "MCP edit is a PNG"
+        assert_router_model_sees "MCP edit follows its instruction" "$edited" \
+            "Record in one word the color of the apple." 'BLUE'
+    else
+        bad "MCP edit is not a PNG: $(head -c 200 <<<"$result")"
+    fi
+    rm -f "$edited"
 }
 
 mcp_rpc() {

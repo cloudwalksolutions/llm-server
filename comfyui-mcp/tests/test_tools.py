@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import re
 
 import httpx
 import PIL.Image
@@ -37,8 +38,9 @@ async def test_every_tool_that_returns_a_picture_shows_it_in_the_viewer():
     async with create_connected_server_and_client_session(server._mcp_server) as client:
         tools = (await client.list_tools()).tools
 
-    assert {tool.name: tool.meta["ui"]["resourceUri"] for tool in tools} == {
-        name: "ui://comfyui/viewer" for name in ("generate", "video", "comic", "get_job")}
+    assert {tool.name: (tool.meta or {}).get("ui", {}).get("resourceUri") for tool in tools} == {
+        **{name: "ui://comfyui/viewer" for name in ("generate", "video", "comic", "edit", "get_job")},
+        "upload_link": None}
 
 
 async def test_the_viewer_is_served_as_an_mcp_app():
@@ -98,6 +100,7 @@ async def test_the_generated_image_goes_to_the_viewer_and_the_model_is_told_it_i
     assert not result.isError
     [note] = result.content
     assert "shown to the user" in note.text
+    assert 'image_id "mcp_00001_.png [output]"' in note.text
     assert result.meta["image"]["mimeType"] == "image/png"
     assert base64.b64decode(result.meta["image"]["data"]) == png
 
@@ -269,8 +272,9 @@ def drawn_panel():
     return file.getvalue()
 
 
-def comfyui_drawing_comics(done=lambda: True):
+def comfyui_drawing_comics(done=lambda: True, stored=None):
     jobs = {}
+    stored = [] if stored is None else stored
 
     def comfyui(request):
         if request.url.path == "/prompt":
@@ -292,6 +296,9 @@ def comfyui_drawing_comics(done=lambda: True):
             }})
         if request.url.path == "/view":
             return httpx.Response(200, content=drawn_panel())
+        if request.url.path == "/upload/image":
+            stored.append(request.content)
+            return httpx.Response(200, json={"name": "comic-c1.png", "subfolder": "", "type": "input"})
         return httpx.Response(404)
 
     return fake_comfyui(comfyui)
@@ -331,6 +338,14 @@ async def test_a_comic_still_being_drawn_returns_its_job_which_get_job_returns_w
     assert result.meta["image"]["mimeType"] == "image/png"
 
 
+async def test_a_comic_is_stored_so_it_can_be_edited_by_its_image_id():
+    stored = []
+    result = await call(comfyui_drawing_comics(stored=stored), "comic", {"panels": [panel()]})
+
+    assert len(stored) == 1
+    assert 'image_id "comic-c1.png [input]"' in result.content[0].text
+
+
 async def test_a_title_is_lettered_above_the_panels():
     untitled = await draw_comic(panel())
     titled = await draw_comic(panel(), title="Debugging")
@@ -356,3 +371,133 @@ async def test_a_job_comfyui_never_ran_is_refused_so_the_model_starts_one_with_v
 
     assert result.isError
     assert "video" in result.content[0].text
+
+
+async def test_an_upload_link_is_a_command_putting_the_file_on_the_public_host():
+    result = await call(fake_comfyui(lambda request: httpx.Response(500)), "upload_link", {},
+                        public_url="https://comfy.example.com")
+
+    command = result.content[0].text
+    assert re.search(r"curl -sf -T <file> https://comfy\.example\.com/upload/[\w-]{40,}", command)
+
+
+def comfyui_storing_uploads(stored):
+    def comfyui(request):
+        if request.url.path == "/upload/image":
+            stored.append(request.content)
+            name = re.search(rb'filename="([^"]+)"', request.content).group(1).decode()
+            return httpx.Response(200, json={"name": name, "subfolder": "", "type": "input"})
+        return httpx.Response(404)
+
+    return fake_comfyui(comfyui)
+
+
+async def upload_path(server):
+    async with create_connected_server_and_client_session(server._mcp_server) as client:
+        command = (await client.call_tool("upload_link", {})).content[0].text
+    return re.search(r"https://comfy\.example\.com(/upload/\S+)", command).group(1)
+
+
+async def put(server, path, body):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.streamable_http_app()),
+                                 base_url="https://comfy.example.com") as terminal:
+        return await terminal.put(path, content=body)
+
+
+def server_storing_uploads(stored, **settings):
+    return build_server(comfyui_storing_uploads(stored), public_url="https://comfy.example.com", **settings)
+
+
+async def test_an_uploaded_picture_is_stored_in_comfyui_and_named_by_its_image_id_once():
+    stored = []
+    server = server_storing_uploads(stored)
+    path = await upload_path(server)
+
+    response = await put(server, path, drawn_panel())
+    reused = await put(server, path, drawn_panel())
+
+    assert response.status_code == 200
+    assert re.fullmatch(r"upload-[\w-]+\.png \[input\]", response.json()["image_id"])
+    assert reused.status_code == 403
+    assert len(stored) == 1
+
+
+async def test_an_upload_to_a_made_up_link_or_of_something_not_a_picture_is_refused():
+    stored = []
+    server = server_storing_uploads(stored)
+
+    not_a_picture = await put(server, await upload_path(server), b"#!/bin/sh\nrm -rf /\n")
+    made_up = await put(server, "/upload/made-up", drawn_panel())
+
+    assert not_a_picture.status_code == 400
+    assert made_up.status_code == 403
+    assert stored == []
+
+
+async def test_an_upload_link_older_than_ten_minutes_is_refused():
+    now = [0.0]
+    stored = []
+    server = server_storing_uploads(stored, clock=lambda: now[0])
+    path = await upload_path(server)
+
+    now[0] = 601
+    response = await put(server, path, drawn_panel())
+
+    assert response.status_code == 403
+    assert stored == []
+
+
+async def test_an_edit_of_no_image_or_more_than_three_is_refused():
+    submitted = []
+    comfyui = fake_comfyui(lambda request: submitted.append(request) or httpx.Response(500))
+
+    for images in ([], ["a.png"] * 4):
+        result = await call(comfyui, "edit", {"prompt": "make it blue", "images": images})
+        assert result.isError
+        assert "images" in result.content[0].text
+    assert submitted == []
+
+
+async def test_an_edit_is_one_job_loading_every_image_it_names_beside_the_instruction():
+    submitted = []
+
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            submitted.append(json.loads(request.content)["prompt"])
+            return httpx.Response(200, json={"prompt_id": "e1"})
+        return httpx.Response(200, json={})
+
+    images = ["mcp_00012_.png [output]", "upload-abc.png"]
+    await call(fake_comfyui(comfyui), "edit", {"prompt": "put the cat on the sofa", "images": images}, wait=0)
+    await call(fake_comfyui(comfyui), "edit", {"prompt": "put the cat on the sofa", "images": images}, wait=0)
+
+    first, second = submitted
+    encoder = next(node["inputs"] for node in first.values() if node["class_type"] == "TextEncodeQwenImageEditPlus"
+                   and node["inputs"]["prompt"])
+    loaded = [first[encoder[f"image{n}"][0]] for n in (1, 2)]
+    assert encoder["prompt"] == "put the cat on the sofa"
+    assert [first[node["inputs"]["image"][0]]["inputs"]["image"] for node in loaded] == images
+    seeds = [next(node["inputs"]["seed"] for node in job.values() if node["class_type"] == "KSampler")
+             for job in submitted]
+    assert seeds[0] != seeds[1]
+
+
+async def test_a_finished_edit_goes_to_the_viewer_and_names_its_image_id_for_the_next_edit():
+    def comfyui(request):
+        if request.url.path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "e1"})
+        if request.url.path == "/history/e1":
+            return httpx.Response(200, json={"e1": {
+                "status": {"status_str": "success", "messages": []},
+                "prompt": [0, "e1", {}, {}, ["save"]],
+                "outputs": {"save": {"images": [{"filename": "edit_00001_.png", "subfolder": "", "type": "output"}]}},
+            }})
+        if request.url.path == "/view":
+            return httpx.Response(200, content=drawn_panel())
+        return httpx.Response(404)
+
+    result = await call(fake_comfyui(comfyui), "edit", {"prompt": "make it blue", "images": ["a.png"]})
+
+    assert not result.isError, result.content[0].text
+    assert result.meta["image"]["mimeType"] == "image/png"
+    assert 'image_id "edit_00001_.png [output]"' in result.content[0].text
