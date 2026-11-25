@@ -83,7 +83,7 @@ render_comfyui_mcp_unit() {
 stage_comfyui_mcp() {
     local stage="$1"
     chmod 755 "$stage"
-    cp "$COMFYUI_MCP_SOURCE/server.py" "$stage/"
+    cp "$COMFYUI_MCP_SOURCE/server.py" "$COMFYUI_MCP_SOURCE/viewer.html" "$stage/"
     cp -R "$COMFYUI_MCP_SOURCE/workflows" "$stage/"
     uv export --quiet --locked --no-header --no-dev --no-emit-project --format requirements-txt \
         --project "$COMFYUI_MCP_SOURCE" -o "$stage/requirements.txt"
