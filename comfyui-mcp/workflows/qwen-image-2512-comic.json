@@ -1,0 +1,17 @@
+{
+  "shared": {
+    "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_2512_fp8_e4m3fn.safetensors", "weight_dtype": "fp8_e4m3fn"}},
+    "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+    "vae": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+    "lora": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["unet", 0], "lora_name": "Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors", "strength_model": 1}},
+    "sampling": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["lora", 0], "shift": 3.1}},
+    "negative": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": "text, letters, words, speech bubble, caption, signature, color, shading, gray background"}}
+  },
+  "panel": {
+    "positive": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": ""}},
+    "latent": {"class_type": "EmptySD3LatentImage", "inputs": {"width": 1024, "height": 1024, "batch_size": 1}},
+    "sampler": {"class_type": "KSampler", "inputs": {"model": ["sampling", 0], "positive": ["positive", 0], "negative": ["negative", 0], "latent_image": ["latent", 0], "seed": 0, "steps": 8, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1}},
+    "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sampler", 0], "vae": ["vae", 0]}},
+    "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": "comic"}}
+  }
+}
