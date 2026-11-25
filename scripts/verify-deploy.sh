@@ -248,21 +248,28 @@ check_comfyui_mcp_generates() {
 
     file=$(mktemp)
     mcp_call generate '{"prompt":"a red apple on a wooden table, studio photo","width":256,"height":256}' \
-        | jq -r '.content[]? | select(.type == "image" and .mimeType == "image/png") | .data' \
+        | jq -r '._meta.image | select(.mimeType == "image/png") | .data' \
         | base64 -d >"$file" 2>/dev/null
     assert_real_256_png "MCP generate" "$file"
     assert_router_model_sees "MCP generate shows its prompt" "$file" \
         "Record in one word the main object in this picture." 'APPLES?'
     rm -f "$file"
+
+    assert_eq "MCP viewer, which shows the picture in the chat" \
+        "$(mcp_rpc resources/read '{"uri":"ui://comfyui/viewer"}' | jq -r '.contents[0].mimeType')" "text/html;profile=mcp-app"
 }
 
-mcp_call() {
-    local tool="$1" arguments="$2"
-    jq -nc --arg t "$tool" --argjson a "$arguments" '{jsonrpc: "2.0", id: 1, method: "tools/call", params: {name: $t, arguments: $a}}' \
+mcp_rpc() {
+    local method="$1" params="$2"
+    jq -nc --arg m "$method" --argjson p "$params" '{jsonrpc: "2.0", id: 1, method: $m, params: $p}' \
         | curl -s --max-time 290 -H @<(printf 'Authorization: Bearer %s' "$COMFYUI_MCP_KEY") \
             -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
             --data @- "https://$COMFYUI_API_HOST/mcp" \
         | sed -n 's/^data: //p' | jq -c '.result // .error'
+}
+
+mcp_call() {
+    mcp_rpc tools/call "$(jq -nc --arg t "$1" --argjson a "$2" '{name: $t, arguments: $a}')"
 }
 
 check_comfyui_mcp_makes_video() {
@@ -274,7 +281,7 @@ check_comfyui_mcp_makes_video() {
         result=$(mcp_call get_job "$(jq -nc --arg j "$job" '{job_id: $j}')")
     done
     file=$(mktemp)
-    jq -r '.content[]? | select(.type == "image" and .mimeType == "image/webp") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
+    jq -r '._meta.image | select(.mimeType == "image/webp") | .data' <<<"$result" | base64 -d >"$file" 2>/dev/null
     if [[ "$(head -c 4 "$file")" == RIFF && "$(head -c 12 "$file" | tail -c 4)" == WEBP ]] && grep -q ANIM "$file"; then
         ok "MCP video is an animated WebP, made in $(($(date +%s) - start))s"
     else

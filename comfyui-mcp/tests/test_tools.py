@@ -29,6 +29,24 @@ async def call_generate(comfyui, **arguments):
     return await call(comfyui, "generate", {"prompt": "a red apple", **arguments})
 
 
+async def test_every_tool_that_returns_a_picture_shows_it_in_the_viewer():
+    server = build_server(fake_comfyui(lambda request: httpx.Response(500)))
+    async with create_connected_server_and_client_session(server._mcp_server) as client:
+        tools = (await client.list_tools()).tools
+
+    assert {tool.name: tool.meta["ui"]["resourceUri"] for tool in tools} == {
+        "generate": "ui://comfyui/viewer", "video": "ui://comfyui/viewer", "get_job": "ui://comfyui/viewer"}
+
+
+async def test_the_viewer_is_served_as_an_mcp_app():
+    server = build_server(fake_comfyui(lambda request: httpx.Response(500)))
+    async with create_connected_server_and_client_session(server._mcp_server) as client:
+        [viewer] = (await client.read_resource("ui://comfyui/viewer")).contents
+
+    assert viewer.mimeType == "text/html;profile=mcp-app"
+    assert viewer.text.startswith("<!doctype html>")
+
+
 async def test_a_size_beyond_the_workflow_bounds_is_refused():
     submitted = []
     comfyui = fake_comfyui(lambda request: submitted.append(request) or httpx.Response(500))
@@ -57,7 +75,7 @@ async def test_a_failed_run_is_reported_with_comfyuis_error():
     assert "HIP out of memory" in result.content[0].text
 
 
-async def test_the_generated_image_is_returned_as_image_content():
+async def test_the_generated_image_goes_to_the_viewer_and_the_model_is_told_it_is_shown():
     png = b"\x89PNG\r\n\x1a\nimage bytes"
 
     def comfyui(request):
@@ -75,11 +93,10 @@ async def test_the_generated_image_is_returned_as_image_content():
     result = await call_generate(fake_comfyui(comfyui))
 
     assert not result.isError
-    [note, image] = result.content
-    assert "already shown to the user" in note.text
-    assert image.type == "image"
-    assert image.mimeType == "image/png"
-    assert base64.b64decode(image.data) == png
+    [note] = result.content
+    assert "shown to the user" in note.text
+    assert result.meta["image"]["mimeType"] == "image/png"
+    assert base64.b64decode(result.meta["image"]["data"]) == png
 
 
 async def test_a_video_longer_than_the_bounds_is_refused():
@@ -123,7 +140,7 @@ def finished_clip(request):
     return httpx.Response(404)
 
 
-async def test_a_clip_finished_within_the_wait_is_returned_as_an_animated_webp():
+async def test_a_clip_finished_within_the_wait_goes_to_the_viewer_as_an_animated_webp():
     submitted = []
 
     def comfyui(request):
@@ -138,10 +155,10 @@ async def test_a_clip_finished_within_the_wait_is_returned_as_an_animated_webp()
              for workflow in submitted for node in workflow.values() if node["class_type"] == "EmptyHunyuanLatentVideo"]
     assert sizes == [(832, 480), (1280, 720)]
     assert not result.isError
-    [note, clip] = result.content
-    assert "already shown to the user" in note.text
-    assert clip.mimeType == "image/webp"
-    assert base64.b64decode(clip.data) == WEBP
+    [note] = result.content
+    assert "shown to the user" in note.text
+    assert result.meta["image"]["mimeType"] == "image/webp"
+    assert base64.b64decode(result.meta["image"]["data"]) == WEBP
 
 
 async def test_a_clip_still_running_returns_its_job_which_get_job_returns_when_done():
@@ -165,7 +182,7 @@ async def test_a_clip_still_running_returns_its_job_which_get_job_returns_when_d
     done = True
     result = await call(fake_comfyui(comfyui), "get_job", {"job_id": "v1"}, wait=0)
 
-    assert result.content[1].mimeType == "image/webp"
+    assert result.meta["image"]["mimeType"] == "image/webp"
 
 
 async def test_a_retried_video_returns_the_clip_already_rendering_instead_of_starting_another():
@@ -182,7 +199,7 @@ async def test_a_retried_video_returns_the_clip_already_rendering_instead_of_sta
     result = await call(fake_comfyui(comfyui), "video", {"prompt": "waves"})
 
     assert posted == []
-    assert result.content[1].mimeType == "image/webp"
+    assert result.meta["image"]["mimeType"] == "image/webp"
 
 
 async def test_an_image_being_generated_does_not_stop_a_video_from_starting():
